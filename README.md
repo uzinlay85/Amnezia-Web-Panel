@@ -1,5 +1,7 @@
 # Amnezia Web Panel
 
+> 📖 **[🇲🇲 မြန်မာဘာသာ Setup & Troubleshooting Guide ဖတ်ရှုရန် ဤနေရာကို နှိပ်ပါ](SETUP_GUIDE_MY.md)**
+
 A modern, high-performance web interface for managing **AmneziaWG**, **Classic WireGuard**, **Xray (XTLS-Reality)**, **Telemt (Telegram MTProxy)**, **Cloudflare WARP**, **AmneziaDNS**, **AdGuard Home**, **SOCKS5**, and **NGINX + Let's Encrypt** services on remote Ubuntu servers — from a single dashboard. Designed to provide a premium user experience with robust administrative capabilities.
 
 > ### 🔄 Compatibility with Official Amnezia Client
