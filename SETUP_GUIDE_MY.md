@@ -13,6 +13,9 @@
 6. [၆။ AmneziaWG 3.1 Install လုပ်ခြင်းနှင့် Port ရွေးချယ်မှု](#၆-amneziawg-31-install-လုပ်ခြင်းနှင့်-port-ရွေးချယ်မှု)
 7. [၇။ Client App ချိတ်ဆက်ခြင်းနှင့် အရေးကြီးသတိပြုဖွယ်များ](#၇-client-app-ချိတ်ဆက်ခြင်းနှင့်-အရေးကြီးသတိပြုဖွယ်များ)
 8. [၈။ လက်တွေ့စစ်ဆေးနည်းများနှင့် Troubleshooting Commands](#၈-လက်တွေ့စစ်ဆေးနည်းများနှင့်-troubleshooting-commands)
+9. [၉။ NGINX Web Server နှင့် Free Let's Encrypt SSL တပ်ဆင်နည်း](#၉-nginx-web-server-နှင့်-free-lets-encrypt-ssl-တပ်ဆင်နည်း)
+10. [၁၀။ Web Panel အား HTTPS SSL (`https://<YOUR_DOMAIN>:5000`) ဖွင့်လှစ်အသုံးပြုနည်း](#၁၀-web-panel-အား-https-ssl-httpsyour_domain5000-ဖွင့်လှစ်အသုံးပြုနည်း)
+11. [၁၁။ VPN Keys / Configs များတွင် IP အစား Domain Name ဖြင့် ထွက်ရှိစေနည်း](#၁၁-vpn-keys--configs-များတွင်-ip-အစား-domain-name-ဖြင့်-ထွက်ရှိစေနည်း)
 
 ---
 
@@ -83,15 +86,15 @@ Panel က SSH မှတစ်ဆင့် Protocol များကို Install
 VPS Terminal (root) ထဲတွင် အောက်ပါ command များ run ပေးပါ:
 
 ```bash
-# User အား sudo password မတောင်းစေရန် သတ်မှတ်ခြင်း
-echo "zinko ALL=(ALL:ALL) NOPASSWD: ALL" > /etc/sudoers.d/zinko
-chmod 0440 /etc/sudoers.d/zinko
+# User အား sudo password မတောင်းစေရန် သတ်မှတ်ခြင်း (<YOUR_USER> နေရာတွင် မိမိ username ထည့်ပါ)
+echo "<YOUR_USER> ALL=(ALL:ALL) NOPASSWD: ALL" > /etc/sudoers.d/<YOUR_USER>
+chmod 0440 /etc/sudoers.d/<YOUR_USER>
 
 # User အား sudo နှင့် docker group များထဲ ထည့်သွင်းခြင်း
-usermod -aG sudo,docker zinko
+usermod -aG sudo,docker <YOUR_USER>
 
 # စမ်းသပ်စစ်ဆေးခြင်း (Password မတောင်းဘဲ container list ပြရမည်)
-su - zinko -c "sudo docker ps"
+su - <YOUR_USER> -c "sudo docker ps"
 ```
 
 ---
@@ -120,10 +123,10 @@ docker --version
 1. Browser မှတစ်ဆင့် `http://<YOUR_VPS_IP>:5000` သို့ သွားပါ။
 2. **Default Login:** `admin` / `admin` (Login ဝင်ပြီးပါက Users menu တွင် password ချက်ချင်း ပြောင်းပါ)။
 3. **"Add Server"** ကို နှိပ်ပြီး:
-   - **Server Name:** `qqq-us` (မိမိကြိုက်နှစ်သက်ရာ)
-   - **Host:** VPS IP (ဥပမာ `50.114.172.236`)
-   - **SSH Port:** VPS ၏ SSH Port (ဥပမာ `22` သို့မဟုတ် `2213`)
-   - **Username:** `zinko` (သို့မဟုတ် `root`)
+   - **Server Name:** `Main-VPN-01` (မိမိကြိုက်နှစ်သက်ရာ)
+   - **Host:** VPS IP (ဥပမာ `<YOUR_VPS_IP>`)
+   - **SSH Port:** VPS ၏ SSH Port (ဥပမာ `22` သို့မဟုတ် custom port)
+   - **Username:** `<YOUR_USER>` (သို့မဟုတ် `root`)
    - **Password:** User ၏ SSH Password
 4. **Save** နှိပ်ပါ။ Panel က အစိမ်းရောင် Live Ping ဖြင့် ချိတ်ဆက်ပြသပါမည်။
 
@@ -184,8 +187,8 @@ docker exec -it amnezia-awg3 awg show
 
 **အောင်မြင်စွာ ချိတ်ဆက်မိပါက အောက်ပါအတိုင်း ပေါ်လာပါမည်:**
 ```ini
-peer: k+FTUmZGoIXOR7P0sw7SRF5DRZDFTqPJuGuBHlWlRlc=
-  endpoint: 37.111.41.89:26199
+peer: <CLIENT_PUBLIC_KEY>
+  endpoint: <CLIENT_IP>:<PORT>
   allowed ips: 10.8.1.2/32
   latest handshake: 46 seconds ago
   transfer: 19.04 KiB received, 40.79 KiB sent
@@ -193,6 +196,76 @@ peer: k+FTUmZGoIXOR7P0sw7SRF5DRZDFTqPJuGuBHlWlRlc=
 
 - **`latest handshake:`** ပေါ်လာခြင်း = လုံခြုံရေးသော့ အောင်မြင်စွာ ဖလှယ်ပြီးပြီ။
 - **`transfer: X KiB received, X KiB sent:`** ပေါ်လာခြင်း = အင်တာနက် Data အမှန်တကယ် အပြန်အလှန် စီးဆင်းနေပြီ ဖြစ်ပါသည်။
+
+---
+
+## ၉။ NGINX Web Server နှင့် Free Let's Encrypt SSL တပ်ဆင်နည်း
+
+NGINX သည် သင့် VPN Server အား ပုံမှန် Website တစ်ခုကဲ့သို့ ဖုံးကွယ်ပေးရန် (Camouflage) နှင့် Free Let's Encrypt SSL Certificate ထုတ်ယူရန် အသုံးပြုပါသည်။
+
+### အဆင့် ၉.၁: ကြိုတင်ပြင်ဆင်မှု (DNS A Record)
+- Domain Name ဝယ်ယူထားသော Dashboard (ဥပမာ Cloudflare) တွင် **A Record** ချိန်ပေးပါ:
+  - **Type:** `A`
+  - **Name:** `vpn` (သို့မဟုတ် `@`)
+  - **IPv4 Address:** `<YOUR_VPS_IP>`
+  - **Proxy status:** `DNS only` (Cloudflare သုံးပါက Grey Cloud ထားပါ)
+
+### အဆင့် ၉.၂: Firewall Port ဖွင့်ပေးပါ
+```bash
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw reload
+```
+
+### အဆင့် ၉.၃: Web Panel တွင် NGINX Install လုပ်ပါ
+1. Web Panel > Server စာမျက်နှာရှိ **Web servers** အောက်က **NGINX** ဘေးရှိ **"Install"** ကို နှိပ်ပါ။
+2. အချက်အလက်များ ဖြည့်ပါ:
+   - **Domain Name:** `<YOUR_DOMAIN>` (ဥပမာ `vpn.example.com`)
+   - **Email:** `<YOUR_EMAIL>` (Let's Encrypt အတွက်)
+   - **Port:** `443`
+3. **"Install"** နှိပ်ပါ။ Certbot က Free SSL Certificate ကို အလိုအလျောက် ထုတ်ယူတပ်ဆင်ပေးသွားပါမည်။
+4. ပြီးလျှင် Browser မှ `https://<YOUR_DOMAIN>` ဖြင့် လုံခြုံသော HTTPS Website စာမျက်နှာ ပွင့်လာပါမည်။
+
+---
+
+## ၁၀။ Web Panel အား HTTPS SSL (`https://<YOUR_DOMAIN>:5000`) ဖွင့်လှစ်အသုံးပြုနည်း
+
+NGINX တပ်ဆင်ပြီးပါက Let's Encrypt SSL Certificate များသည် Server ပေါ်ရှိ လမ်းကြောင်းတွင် ရှိနှင့်ပြီး ဖြစ်ပါသည်။ Web Panel ကိုယ်တိုင်အား အစိမ်းရောင်သော့ခလောက် (HTTPS) ဖြင့် လုံခြုံစွာ ဝင်ရောက်နိုင်ရန်:
+
+1. Web Panel ၏ အပေါ်ဘက် Navigation Bar ရှိ **"Settings" (⚙️)** သို့ သွားပါ။
+2. **"🔒 SSL / HTTPS Settings"** ကဏ္ဍတွင် အောက်ပါအတိုင်း ဖြည့်ပါ:
+   - **ENABLE HTTPS:** [✓] **အမှန်ခြစ်ပေးပါ**
+   - **PANEL PORT:** `5000`
+   - **DOMAIN NAME:** `<YOUR_DOMAIN>` (ဥပမာ `vpn.example.com`)
+   - **SSL CERTIFICATE PATH (.PEM):**
+     ```text
+     /opt/amnezia/nginx/letsencrypt/live/<YOUR_DOMAIN>/fullchain.pem
+     ```
+   - **PRIVATE KEY PATH (.PEM):**
+     ```text
+     /opt/amnezia/nginx/letsencrypt/live/<YOUR_DOMAIN>/privkey.pem
+     ```
+3. ညာဘက်အောက်ရှိ **"💾 Save changes"** ကို နှိပ်ပါ။
+4. VPS Terminal တွင် Service ကို Restart ချပေးပါ:
+   ```bash
+   sudo systemctl restart amnezia-panel
+   ```
+5. ယခုအခါ **`https://<YOUR_DOMAIN>:5000`** ဖြင့် လုံခြုံသော HTTPS ဖြင့် တိုက်ရိုက် ဝင်ရောက်နိုင်ပါပြီ။
+
+---
+
+## ၁၁။ VPN Keys / Configs များတွင် IP အစား Domain Name ဖြင့် ထွက်ရှိစေနည်း
+
+ထုတ်ယူသမျှ VPN Keys/Configs များအားလုံးတွင် IP Address အစား Domain Name ဖြင့် ထွက်ရှိစေရန်:
+
+1. Web Panel ရှိ **"Servers"** tab သို့ သွားပါ။
+2. မိမိ Server ဘေးရှိ **Edit (ခဲတံပုံ - ✏️)** ကို နှိပ်ပါ။
+3. **Host / IP:** နေရာတွင် IP အစား **`<YOUR_DOMAIN>`** (ဥပမာ `vpn.example.com`) ဟု ပြောင်းထည့်ပြီး **Save** လုပ်ပါ။
+4. ထိုအခါ Client Connection အသစ် ဆောက်တိုင်း Config ထဲတွင်:
+   ```ini
+   Endpoint = <YOUR_DOMAIN>:443
+   ```
+   ဟု Domain Name ဖြင့် အလိုအလျောက် ထွက်လာပါမည်။
 
 ---
 
