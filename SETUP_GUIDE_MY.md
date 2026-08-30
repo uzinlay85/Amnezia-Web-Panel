@@ -1,15 +1,15 @@
 # Amnezia Web Panel - Setup & Troubleshooting Guide (မြန်မာဘာသာ)
 
-ဤ Guide သည် **Amnezia Web Panel** ကို Linux VPS (Ubuntu/Debian) ပေါ်တွင် စတင်တပ်ဆင်ခြင်းမှသည် လက်တွေ့ကြုံတွေ့ရတတ်သော Error များ၊ Permission ပြဿနာများနှင့် မြန်မာနိုင်ငံ ISP အပိတ်အပင်များကြား အောင်မြင်စွာ ချိတ်ဆက်နိုင်သည်အထိ အဆင့်ဆင့် လက်တွေ့ဖြေရှင်းနည်း အပြည့်အစုံ ဖြစ်ပါသည်။
+ဤ Guide သည် **Amnezia Web Panel** ကို Linux VPS (Ubuntu 20.04/22.04/24.04/Debian) ပေါ်တွင် စတင်တပ်ဆင်ခြင်းမှသည် လက်တွေ့ကြုံတွေ့ရတတ်သော Error များ၊ Permission ပြဿနာများ၊ SSH Key Authentication နှင့် မြန်မာနိုင်ငံ ISP အပိတ်အပင်များကြား အောင်မြင်စွာ ချိတ်ဆက်နိုင်သည်အထိ အဆင့်ဆင့် လက်တွေ့ဖြေရှင်းနည်း အပြည့်အစုံ ဖြစ်ပါသည်။
 
 ---
 
 ## 📑 မာတိကာ (Table of Contents)
-1. [၁။ Linux VPS ပေါ်တွင် Panel စတင်တပ်ဆင်ခြင်း](#၁-linux-vps-ပေါ်တွင်-panel-စတင်တပ်ဆင်ခြင်း)
-2. [၂။ Background Service (Systemd) ပြုလုပ်ခြင်း](#၂-background-service-systemd-ပြုလုပ်ခြင်း)
-3. [၃။ အရေးကြီးသော User & Sudo Permissions ပြင်ဆင်ခြင်း](#၃-အရေးကြီးသော-user--sudo-permissions-ပြင်ဆင်ခြင်း)
-4. [၄။ Docker Package Conflict ဖြေရှင်းနည်း](#၄-docker-package-conflict-ဖြေရှင်းနည်း)
-5. [၅။ Panel ထဲတွင် Server ထည့်သွင်းခြင်း](#၅-panel-ထဲတွင်-server-ထည့်သွင်းခြင်း)
+1. [၁။ Linux VPS ပေါ်တွင် Panel စတင်တပ်ဆင်ခြင်း (Root / Non-Root User)](#၁-linux-vps-ပေါ်တွင်-panel-စတင်တပ်ဆင်ခြင်း)
+2. [၂။ Background Service (Systemd) အမြဲ Run နေစေရန် ပြုလုပ်ခြင်း](#၂-background-service-systemd-အမြဲ-run-နေစေရန်-ပြုလုပ်ခြင်း)
+3. [၃။ Docker Package Conflict ဖြေရှင်းနည်း (Ubuntu 22.04 / 24.04)](#၃-docker-package-conflict-ဖြေရှင်းနည်း)
+4. [၄။ User Permissions & Sudo Configuration](#၄-user-permissions--sudo-configuration)
+5. [၅။ Panel ထဲတွင် Server အသစ် ထည့်သွင်းခြင်း (Password vs SSH Key)](#၅-panel-ထဲတွင်-server-အသစ်-ထည့်သွင်းခြင်း)
 6. [၆။ AmneziaWG 3.1 Install လုပ်ခြင်းနှင့် Port ရွေးချယ်မှု](#၆-amneziawg-31-install-လုပ်ခြင်းနှင့်-port-ရွေးချယ်မှု)
 7. [၇။ Client App ချိတ်ဆက်ခြင်းနှင့် အရေးကြီးသတိပြုဖွယ်များ](#၇-client-app-ချိတ်ဆက်ခြင်းနှင့်-အရေးကြီးသတိပြုဖွယ်များ)
 8. [၈။ လက်တွေ့စစ်ဆေးနည်းများနှင့် Troubleshooting Commands](#၈-လက်တွေ့စစ်ဆေးနည်းများနှင့်-troubleshooting-commands)
@@ -28,12 +28,24 @@ sudo apt install -y git python3 python3-pip python3-venv curl
 ```
 
 ### အဆင့် ၁.၂: Repository Clone လုပ်ပြီး Virtual Environment ဆောက်ခြင်း
+
+**ရွေးချယ်မှု (A) - Non-Root User (ဥပမာ `zinko`) ဖြင့် Run လိုပါက:**
+```bash
+cd ~
+git clone https://github.com/uzinlay85/Amnezia-Web-Panel.git
+cd Amnezia-Web-Panel
+
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+**ရွေးချယ်မှု (B) - Root User ဖြင့် Run လိုပါက:**
 ```bash
 cd /root
 git clone https://github.com/uzinlay85/Amnezia-Web-Panel.git
 cd Amnezia-Web-Panel
 
-# Virtual Environment ဖန်တီးပြီး dependencies သွင်းပါ
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
@@ -41,12 +53,34 @@ pip install -r requirements.txt
 
 ---
 
-## ၂။ Background Service (Systemd) ပြုလုပ်ခြင်း
+## ၂။ Background Service (Systemd) အမြဲ Run နေစေရန် ပြုလုပ်ခြင်း
 
 Panel ကို ၂၄ နာရီ မပြတ် background တွင် run နေစေရန်နှင့် Server reboot ကျသွားပါက အလိုအလျောက် ပွင့်လာစေရန် Service ဆောက်ပါမည်။
 
+### ရွေးချယ်မှု (A) - Non-Root User (ဥပမာ `zinko`) အတွက် Service:
 ```bash
-cat << 'EOF' > /etc/systemd/system/amnezia-panel.service
+sudo bash -c 'cat << "EOF" > /etc/systemd/system/amnezia-panel.service
+[Unit]
+Description=Amnezia Web Panel Service
+After=network.target
+
+[Service]
+Type=simple
+User=zinko
+WorkingDirectory=/home/zinko/Amnezia-Web-Panel
+ExecStart=/home/zinko/Amnezia-Web-Panel/venv/bin/python app.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF'
+```
+*(💡 မှတ်ချက်: `zinko` နေရာတွင် မိမိ၏ username အတိုင်း အစားထိုးနိုင်ပါသည်)*
+
+### ရွေးချယ်မှု (B) - Root User အတွက် Service:
+```bash
+sudo bash -c 'cat << "EOF" > /etc/systemd/system/amnezia-panel.service
 [Unit]
 Description=Amnezia Web Panel Service
 After=network.target
@@ -61,10 +95,10 @@ RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
-EOF
+EOF'
 ```
 
-Service ကို စတင်ပါ:
+### Service ကို စတင် (Start & Enable) လုပ်ပါ:
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl start amnezia-panel
@@ -74,60 +108,58 @@ sudo systemctl status amnezia-panel
 
 ---
 
-## ၃။ အရေးကြီးသော User & Sudo Permissions ပြင်ဆင်ခြင်း
+## ၃။ Docker Package Conflict ဖြေရှင်းနည်း
 
-### ⚠️ ကြုံတွေ့ရတတ်သော Error:
-> `sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper sudo: a password is required`
-
-### 💡 ဖြစ်ရသည့် အကြောင်းရင်း:
-Panel က SSH မှတစ်ဆင့် Protocol များကို Install လုပ်သည့်အခါ `sudo` အခွင့်အရေး လိုအပ်ပါသည်။ အသုံးပြုသော User (ဥပမာ `zinko`) သည် password မရိုက်ဘဲ sudo run ခွင့် (NOPASSWD) မရရှိထားပါက ဤ Error တက်ပြီး ရပ်သွားတတ်ပါသည်။
-
-### 🛠️ ဖြေရှင်းနည်း:
-VPS Terminal (root) ထဲတွင် အောက်ပါ command များ run ပေးပါ:
-
-```bash
-# User အား sudo password မတောင်းစေရန် သတ်မှတ်ခြင်း (<YOUR_USER> နေရာတွင် မိမိ username ထည့်ပါ)
-echo "<YOUR_USER> ALL=(ALL:ALL) NOPASSWD: ALL" > /etc/sudoers.d/<YOUR_USER>
-chmod 0440 /etc/sudoers.d/<YOUR_USER>
-
-# User အား sudo နှင့် docker group များထဲ ထည့်သွင်းခြင်း
-usermod -aG sudo,docker <YOUR_USER>
-
-# စမ်းသပ်စစ်ဆေးခြင်း (Password မတောင်းဘဲ container list ပြရမည်)
-su - <YOUR_USER> -c "sudo docker ps"
-```
-
----
-
-## ၄။ Docker Package Conflict ဖြေရှင်းနည်း
-
-### ⚠️ ကြုံတွေ့ရတတ်သော Error:
+### ⚠️ ကြုံတွေ့ရတတ်သော Error (Ubuntu 22.04 / 24.04):
 > `The following packages have unmet dependencies: containerd.io : Conflicts: containerd`
 
 ### 🛠️ ဖြေရှင်းနည်း:
-Ubuntu တွင် Official Docker Repository ရှိနေချိန် `docker.io` အစား `docker-ce` ကို အောက်ပါအတိုင်း သွင်းပေးရပါမည်:
+Official Docker Repository ရှိနေချိန် `docker.io` အစား `docker-ce` ကို အောက်ပါအတိုင်း သွင်းပေးရပါမည်:
 
 ```bash
-apt remove -y containerd
-apt update
-apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-systemctl start docker
-systemctl enable docker
+sudo apt remove -y containerd
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker
+
+# မိမိ User ကို docker group ထဲ ထည့်ပါ (<YOUR_USER> နေရာတွင် မိမိ username ထည့်ပါ)
+sudo usermod -aG docker <YOUR_USER>
+
+# စစ်ဆေးပါ
 docker --version
 ```
 
 ---
 
-## ၅။ Panel ထဲတွင် Server ထည့်သွင်းခြင်း
+## ၄။ User Permissions & Sudo Configuration
+
+### ⚠️ ကြုံတွေ့ရတတ်သော Error:
+> `sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper sudo: a password is required`
+
+### 💡 ဖြေရှင်းနည်း (၂) မျိုး:
+1. **နည်းလမ်း ၁ (အကြံပြုချက် - NOPASSWD မသုံးဘဲ လုံခြုံစွာထားခြင်း):**  
+   Web Panel တွင် Server ထည့်သွင်းစဉ် **Password** နေရာတွင် User ၏ Sudo Password ကို ထည့်ပေးထားပါက Panel က `echo 'password' | sudo -S` ဖြင့် အလိုအလျောက် ဖြည့်ဆည်းပေးသွားမည် ဖြစ်သောကြောင့် Server ပေါ်တွင် `NOPASSWD` ဖိုင်များ သွားပြင်စရာ မလိုပါ။
+2. **နည်းလမ်း ၂ (Passwordless Sudo ခွင့်ပြုခြင်း):**  
+   Server Terminal တွင် Password လုံးဝ မတောင်းစေလိုပါက:
+   ```bash
+   echo "<YOUR_USER> ALL=(ALL:ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/<YOUR_USER>
+   sudo chmod 0440 /etc/sudoers.d/<YOUR_USER>
+   ```
+
+---
+
+## ၅။ Panel ထဲတွင် Server အသစ် ထည့်သွင်းခြင်း
 
 1. Browser မှတစ်ဆင့် `http://<YOUR_VPS_IP>:5000` သို့ သွားပါ။
 2. **Default Login:** `admin` / `admin` (Login ဝင်ပြီးပါက Users menu တွင် password ချက်ချင်း ပြောင်းပါ)။
-3. **"Add Server"** ကို နှိပ်ပြီး:
+3. **"Servers"** tab > **"＋ Add Server"** ကို နှိပ်ပြီး:
    - **Server Name:** `Main-VPN-01` (မိမိကြိုက်နှစ်သက်ရာ)
-   - **Host:** VPS IP (ဥပမာ `<YOUR_VPS_IP>`)
+   - **Host:** VPS IP (သို့မဟုတ် `<YOUR_DOMAIN>`)
    - **SSH Port:** VPS ၏ SSH Port (ဥပမာ `22` သို့မဟုတ် custom port)
    - **Username:** `<YOUR_USER>` (သို့မဟုတ် `root`)
-   - **Password:** User ၏ SSH Password
+   - **Auth Type:**
+     - 🔑 **SSH Key ဖြင့်သုံးပါက (Root Login ပိတ်ထားသော Server များအတွက်):** **SSH Private Key** နေရာတွင် `id_ed25519` / `id_rsa` စာသားတစ်ခုလုံးကို Paste ထည့်ပြီး **Password** နေရာတွင် Sudo password ကို ထည့်ပါ။
+     - 🔒 **Password ဖြင့်သုံးပါက:** **Password** နေရာတွင် SSH password ကို ထည့်ပါ။
 4. **Save** နှိပ်ပါ။ Panel က အစိမ်းရောင် Live Ping ဖြင့် ချိတ်ဆက်ပြသပါမည်။
 
 ---
@@ -274,7 +306,7 @@ NGINX တပ်ဆင်ပြီးပါက Let's Encrypt SSL Certificate မ�
 နောင်တွင် မူရင်း Developer ဆီမှ Update အသစ်များ ထွက်လာပါက မိမိ Server ပေါ်တွင် Update ရယူရန်:
 
 ```bash
-cd /root/Amnezia-Web-Panel
+cd ~/Amnezia-Web-Panel
 git pull upstream main
 sudo systemctl restart amnezia-panel
 ```
