@@ -1,6 +1,6 @@
 # Amnezia Web Panel - Setup & Troubleshooting Guide (မြန်မာဘာသာ)
 
-ဤ Guide သည် **Amnezia Web Panel** ကို Linux VPS (Ubuntu 20.04/22.04/24.04/Debian) ပေါ်တွင် စတင်တပ်ဆင်ခြင်းမှသည် လက်တွေ့ကြုံတွေ့ရတတ်သော Error များ၊ Permission ပြဿနာများ၊ SSH Key Authentication၊ NGINX SSL Configuration နှင့် မြန်မာနိုင်ငံ ISP အပိတ်အပင်များကြား အောင်မြင်စွာ ချိတ်ဆက်နိုင်သည်အထိ အဆင့်ဆင့် လက်တွေ့ဖြေရှင်းနည်း အပြည့်အစုံ ဖြစ်ပါသည်။
+ဤ Guide သည် **Amnezia Web Panel** ကို Linux VPS (Ubuntu 20.04/22.04/24.04/Debian) ပေါ်တွင် စတင်တပ်ဆင်ခြင်းမှသည် လက်တွေ့ကြုံတွေ့ရတတ်သော Error များ၊ Permission ပြဿနာများ၊ SSH Key Authentication၊ NGINX SSL Configuration၊ မြန်မာနိုင်ငံ ISP အပိတ်အပင်များကြား အောင်မြင်စွာ ချိတ်ဆက်နိုင်သည်အထိနှင့် စနစ်တစ်ခုလုံးအား **အပြည့်အစုံ ပြန်လည် Uninstall / Clean ပြုလုပ်နည်း** အဆင့်ဆင့် လက်တွေ့ဖြေရှင်းနည်း အပြည့်အစုံ ဖြစ်ပါသည်။
 
 ---
 
@@ -16,6 +16,7 @@
 9. [၉။ NGINX Web Server နှင့် Free Let's Encrypt SSL တပ်ဆင်နည်း](#၉-nginx-web-server-နှင့်-free-lets-encrypt-ssl-တပ်ဆင်နည်း)
 10. [၁၀။ Web Panel အား HTTPS SSL (`https://<YOUR_DOMAIN>:5000`) ဖွင့်လှစ်အသုံးပြုနည်း](#၁၀-web-panel-အား-https-ssl-httpsyour_domain5000-ဖွင့်လှစ်အသုံးပြုနည်း)
 11. [၁၁။ VPN Keys / Configs များတွင် IP အစား Domain Name ဖြင့် ထွက်ရှိစေနည်း](#၁၁-vpn-keys--configs-များတွင်-ip-အစား-domain-name-ဖြင့်-ထွက်ရှိစေနည်း)
+12. [၁၂။ စနစ်တစ်ခုလုံးကို အပြီးတိုင် Uninstall / Remove ပြုလုပ်နည်း](#၁၂-စနစ်တစ်ခုလုံးကို-အပြီးတိုင်-uninstall--remove-ပြုလုပ်နည်း)
 
 ---
 
@@ -312,6 +313,70 @@ Browser အသစ်တစ်ခု ဖွင့်ပြီး:
    Endpoint = <YOUR_DOMAIN>:443
    ```
    ဟု Domain Name ဖြင့် အလိုအလျောက် ထွက်လာပါမည်။
+
+---
+
+## ၁၂။ စနစ်တစ်ခုလုံးကို အပြီးတိုင် Uninstall / Remove ပြုလုပ်နည်း
+
+Amnezia Web Panel နှင့် VPN Protocols များကို Server ပေါ်မှ လုံးဝ ရှင်းလင်း ဖျက်ပစ်လိုပါက အောက်ပါ နည်းလမ်းများဖြင့် ပြုလုပ်နိုင်ပါသည်:
+
+### နည်းလမ်း (A) - Web Panel Dashboard မှ ရှင်းလင်းခြင်း (One-Click Clean)
+1. **Protocol တစ်ခုချင်းစီ ဖြုတ်ရန်:** သက်ဆိုင်ရာ Protocol Card (ဥပမာ AmneziaWG, NGINX) အောက်ရှိ အနီရောင် **"Uninstall"** ကို နှိပ်ပါ။
+2. **Server ပေါ်ရှိ VPN တစ်ခုလုံး ရှင်းလင်းရန်:** Server Detail စာမျက်နှာ ညာဘက်အပေါ်ရှိ **"Management"** > **"Clear server"** ကို နှိပ်လိုက်ပါက Amnezia ပိုင် Docker Containers, Images များနှင့် `/opt/amnezia` directory အားလုံးကို အလိုအလျောက် သန့်စင်ပေးသွားပါမည်။
+
+---
+
+### နည်းလမ်း (B) - VPS Terminal မှ အပြီးတိုင် Clean Uninstall ပြုလုပ်ခြင်း (Complete Removal)
+
+အကယ်၍ Web Panel အပါအဝင် Service, Containers, Data ဖိုင်များ အားလုံးကို VPS Terminal မှ အပြီးတိုင် ဖျက်ပစ်လိုပါက အောက်ပါ Command များကို အဆင့်ဆင့် Run ပေးပါ:
+
+#### အဆင့် ၁: Web Panel Systemd Service ကို ရပ်တန့်ပြီး ဖျက်ပါ
+```bash
+sudo systemctl stop amnezia-panel
+sudo systemctl disable amnezia-panel
+sudo rm -f /etc/systemd/system/amnezia-panel.service
+sudo systemctl daemon-reload
+```
+
+#### အဆင့် ၂: Amnezia Docker Containers & Images များကို အပြီးတိုင် ဖျက်ပါ
+```bash
+# Amnezia Containers များကို ရပ်တန့်ပြီး ဖျက်ပစ်ခြင်း
+sudo docker stop $(sudo docker ps -a -q --filter name=amnezia) 2>/dev/null || true
+sudo docker rm -fv $(sudo docker ps -a -q --filter name=amnezia) 2>/dev/null || true
+
+# Amnezia Docker Images များကို ဖျက်ပစ်ခြင်း
+sudo docker rmi -f $(sudo docker images -q "*amnezia*") 2>/dev/null || true
+
+# Amnezia DNS Network ကို ဖျက်ပစ်ခြင်း
+sudo docker network rm amnezia-dns-net 2>/dev/null || true
+```
+
+#### အဆင့် ၃: Amnezia Data & Configuration Directories များကို ဖျက်ပါ
+```bash
+# Server keys, configs နှင့် SSL certs ဖိုင်များ ဖျက်ခြင်း
+sudo rm -rf /opt/amnezia
+
+# Sudoers configuration ဖျက်ခြင်း (ပြုလုပ်ထားခဲ့ပါက)
+sudo rm -f /etc/sudoers.d/<YOUR_USER>
+```
+
+#### အဆင့် ၄: Web Panel Source Code & Virtual Environment ကို ဖျက်ပါ
+```bash
+# Non-Root User အတွက်:
+rm -rf ~/Amnezia-Web-Panel
+
+# Root User အတွက်:
+sudo rm -rf /root/Amnezia-Web-Panel
+```
+
+#### အဆင့် ၅: (စိတ်ကြိုက်) Firewall Rules များ ပြန်လည်ဖျက်သိမ်းခြင်း
+```bash
+sudo ufw delete allow 5000/tcp
+sudo ufw delete allow 80/tcp
+sudo ufw delete allow 443/tcp
+sudo ufw delete allow 443/udp
+sudo ufw reload
+```
 
 ---
 
