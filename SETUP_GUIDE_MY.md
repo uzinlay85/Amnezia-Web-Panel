@@ -1,6 +1,6 @@
 # Amnezia Web Panel - Setup & Troubleshooting Guide (မြန်မာဘာသာ)
 
-ဤ Guide သည် **Amnezia Web Panel** ကို Linux VPS (Ubuntu 20.04/22.04/24.04/Debian) ပေါ်တွင် စတင်တပ်ဆင်ခြင်းမှသည် လက်တွေ့ကြုံတွေ့ရတတ်သော Error များ၊ Permission ပြဿနာများ၊ SSH Key Authentication နှင့် မြန်မာနိုင်ငံ ISP အပိတ်အပင်များကြား အောင်မြင်စွာ ချိတ်ဆက်နိုင်သည်အထိ အဆင့်ဆင့် လက်တွေ့ဖြေရှင်းနည်း အပြည့်အစုံ ဖြစ်ပါသည်။
+ဤ Guide သည် **Amnezia Web Panel** ကို Linux VPS (Ubuntu 20.04/22.04/24.04/Debian) ပေါ်တွင် စတင်တပ်ဆင်ခြင်းမှသည် လက်တွေ့ကြုံတွေ့ရတတ်သော Error များ၊ Permission ပြဿနာများ၊ SSH Key Authentication၊ NGINX SSL Configuration နှင့် မြန်မာနိုင်ငံ ISP အပိတ်အပင်များကြား အောင်မြင်စွာ ချိတ်ဆက်နိုင်သည်အထိ အဆင့်ဆင့် လက်တွေ့ဖြေရှင်းနည်း အပြည့်အစုံ ဖြစ်ပါသည်။
 
 ---
 
@@ -262,8 +262,12 @@ sudo ufw reload
 
 ## ၁၀။ Web Panel အား HTTPS SSL (`https://<YOUR_DOMAIN>:5000`) ဖွင့်လှစ်အသုံးပြုနည်း
 
-NGINX တပ်ဆင်ပြီးပါက Let's Encrypt SSL Certificate များသည် Server ပေါ်ရှိ လမ်းကြောင်းတွင် ရှိနှင့်ပြီး ဖြစ်ပါသည်။ Web Panel ကိုယ်တိုင်အား အစိမ်းရောင်သော့ခလောက် (HTTPS) ဖြင့် လုံခြုံစွာ ဝင်ရောက်နိုင်ရန်:
+### ⚠️ အဖြစ်များသော ပြဿနာ (`ERR_SSL_PROTOCOL_ERROR`):
+Settings ထဲတွင် "Enable HTTPS" ကို အမှန်ခြစ်ထားသော်လည်း Certificate ဖိုင်လမ်းကြောင်း မထည့်ရသေးခြင်း (သို့မဟုတ်) Placeholder စာသားများသာ ရှိနေပါက Panel သည် HTTP ဖြင့်သာ ပြန်ဖွင့်သောကြောင့် ဤ Error တက်တတ်ပါသည်။
 
+### 🛠️ စနစ်တကျ ပြင်ဆင်ရန် အဆင့်များ:
+
+#### အဆင့် ၁၀.၁: Settings ထဲတွင် လမ်းကြောင်းများ အတိအကျ ဖြည့်ပါ
 1. Web Panel ၏ အပေါ်ဘက် Navigation Bar ရှိ **"Settings" (⚙️)** သို့ သွားပါ။
 2. **"🔒 SSL / HTTPS Settings"** ကဏ္ဍတွင် အောက်ပါအတိုင်း ဖြည့်ပါ:
    - **ENABLE HTTPS:** [✓] **အမှန်ခြစ်ပေးပါ**
@@ -278,11 +282,21 @@ NGINX တပ်ဆင်ပြီးပါက Let's Encrypt SSL Certificate မ�
      /opt/amnezia/nginx/letsencrypt/live/<YOUR_DOMAIN>/privkey.pem
      ```
 3. ညာဘက်အောက်ရှိ **"💾 Save changes"** ကို နှိပ်ပါ။
-4. VPS Terminal တွင် Service ကို Restart ချပေးပါ:
-   ```bash
-   sudo systemctl restart amnezia-panel
-   ```
-5. ယခုအခါ **`https://<YOUR_DOMAIN>:5000`** ဖြင့် လုံခြုံသော HTTPS ဖြင့် တိုက်ရိုက် ဝင်ရောက်နိုင်ပါပြီ။
+
+#### အဆင့် ၁၀.၂: SSL ဖိုင်အား ဖတ်ရှုခွင့် (Permissions) ပေးပြီး Restart ချပါ
+Web Panel ကို Non-root User (ဥပမာ `zinko`) ဖြင့် run ထားပါက SSL key ဖိုင်ကို ဖတ်ခွင့်ရစေရန် VPS Terminal တွင် အောက်ပါ command ကို Run ပေးပါ:
+
+```bash
+# SSL key ဖိုင်များကို ဖတ်ရှုခွင့်ပေးခြင်း
+sudo chmod -R 755 /opt/amnezia/nginx/letsencrypt
+
+# Panel Service ကို Restart ချပါ
+sudo systemctl restart amnezia-panel
+```
+
+#### အဆင့် ၁၀.၃: ဝင်ရောက် စမ်းသပ်ပါ
+Browser အသစ်တစ်ခု ဖွင့်ပြီး:
+👉 **`https://<YOUR_DOMAIN>:5000`** ဖြင့် လုံခြုံသော အစိမ်းရောင်သော့ခလောက် (Secure HTTPS) ဖြင့် တိုက်ရိုက် ဝင်ရောက်နိုင်ပါပြီ။
 
 ---
 
