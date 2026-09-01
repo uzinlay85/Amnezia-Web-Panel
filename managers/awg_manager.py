@@ -500,11 +500,11 @@ iptables -C FORWARD -j DOCKER-USER 2>/dev/null || iptables -A FORWARD -j DOCKER-
             f'LABEL maintainer="AmneziaVPN"\n'
             f"\n"
             f"RUN mkdir -p /opt/amnezia\n"
-            f'RUN echo "#!/bin/bash" > /opt/amnezia/start.sh && '
+            f'RUN echo "#!/bin/sh" > /opt/amnezia/start.sh && '
             f'echo "tail -f /dev/null" >> /opt/amnezia/start.sh\n'
             f"RUN chmod a+x /opt/amnezia/start.sh\n"
             f"\n"
-            f'ENTRYPOINT [ "dumb-init", "/opt/amnezia/start.sh" ]\n'
+            f'ENTRYPOINT [ "/bin/sh", "/opt/amnezia/start.sh" ]\n'
         )
         self.ssh.run_sudo_command(f"mkdir -p {dockerfile_folder}")
         self.ssh.upload_file_sudo(dockerfile_content, f"{dockerfile_folder}/Dockerfile")
