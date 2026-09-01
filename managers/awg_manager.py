@@ -499,9 +499,6 @@ iptables -C FORWARD -j DOCKER-USER 2>/dev/null || iptables -A FORWARD -j DOCKER-
             f"\n"
             f'LABEL maintainer="AmneziaVPN"\n'
             f"\n"
-            f"RUN apk add --no-cache bash curl dumb-init iptables\n"
-            f"RUN apk --update upgrade --no-cache\n"
-            f"\n"
             f"RUN mkdir -p /opt/amnezia\n"
             f'RUN echo "#!/bin/bash" > /opt/amnezia/start.sh && '
             f'echo "tail -f /dev/null" >> /opt/amnezia/start.sh\n'
@@ -513,7 +510,7 @@ iptables -C FORWARD -j DOCKER-USER 2>/dev/null || iptables -A FORWARD -j DOCKER-
         self.ssh.upload_file_sudo(dockerfile_content, f"{dockerfile_folder}/Dockerfile")
 
         out, err, code = self.ssh.run_sudo_command(
-            f"docker build --no-cache --pull -t {container_name} {dockerfile_folder}",
+            f"docker build -t {container_name} {dockerfile_folder}",
             timeout=300
         )
         if code != 0:
