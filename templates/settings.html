@@ -416,6 +416,56 @@
             </div>
         </div>
 
+        <!-- BLOCK: Self-Service -->
+        <div class="card" style="margin-top: var(--space-lg);">
+            <h3 class="card-title" style="margin-bottom: var(--space-lg);">🔐 {{ _('self_service_title') }}</h3>
+            <form id="selfServiceForm">
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: var(--space-sm); cursor: pointer;">
+                        <input type="checkbox" id="ss_enabled" {% if settings.self_service.enabled %}checked{% endif %}>
+                        {{ _('self_service_enabled') }}
+                    </label>
+                    <p class="form-hint">{{ _('self_service_enabled_desc') }}</p>
+                </div>
+                <div id="selfServiceFields" {% if not settings.self_service.enabled %}style="display:none;"{% endif %}>
+                    <div class="form-group">
+                        <label style="display: flex; align-items: center; gap: var(--space-sm); cursor: pointer;">
+                            <input type="checkbox" id="ss_web_enabled" {% if settings.self_service.web_enabled %}checked{% endif %}>
+                            {{ _('self_service_web') }}
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label style="display: flex; align-items: center; gap: var(--space-sm); cursor: pointer;">
+                            <input type="checkbox" id="ss_telegram_enabled" {% if settings.self_service.telegram_enabled %}checked{% endif %}>
+                            {{ _('self_service_telegram') }}
+                        </label>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">{{ _('self_service_max_conns') }}</label>
+                        <input type="number" class="form-input" id="ss_max_connections" value="{{ settings.self_service.max_connections_per_user | default(5) }}" min="1" max="100">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">{{ _('self_service_rate_limit') }}</label>
+                        <input type="number" class="form-input" id="ss_rate_limit" value="{{ settings.self_service.rate_limit_count | default(3) }}" min="1" max="100">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">{{ _('self_service_rate_window') }}</label>
+                        <input type="number" class="form-input" id="ss_rate_window" value="{{ settings.self_service.rate_limit_window_seconds | default(60) }}" min="1" max="86400">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">{{ _('self_service_protocols') }}</label>
+                        <div class="flex gap-md" style="display:flex; gap:var(--space-md); flex-wrap:wrap;">
+                            {% for choice in self_service_protocol_choices %}
+                            <label style="display:flex; align-items:center; gap:var(--space-sm);">
+                                <input type="checkbox" name="ss_proto" value="{{ choice.id }}" {% if choice.id in settings.self_service.allowed_protocols | default(['awg', 'awg2']) %}checked{% endif %}> {{ choice.name }}
+                            </label>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+            </form>
+        </div>
+
         <!-- BLOCK: About & Updates -->
         <div class="card" style="margin-top: var(--space-lg);">
             <h3 class="card-title" style="margin-bottom: var(--space-lg);">ℹ️ {{ _('about_title') }}</h3>
@@ -547,6 +597,10 @@
 
     document.getElementById('ssl_enabled').addEventListener('change', (e) => {
         document.getElementById('sslFields').style.display = e.target.checked ? 'block' : 'none';
+    });
+
+    document.getElementById('ss_enabled').addEventListener('change', (e) => {
+        document.getElementById('selfServiceFields').style.display = e.target.checked ? 'block' : 'none';
     });
 
     let tunnelStatusTimer = null;
@@ -845,11 +899,21 @@
             interval_hours: parseInt(autoBackupForm.interval_hours.value || '24')
         };
 
+        const self_service = {
+            enabled: document.getElementById('ss_enabled').checked,
+            web_enabled: document.getElementById('ss_web_enabled').checked,
+            telegram_enabled: document.getElementById('ss_telegram_enabled').checked,
+            max_connections_per_user: parseInt(document.getElementById('ss_max_connections').value || '5'),
+            rate_limit_count: parseInt(document.getElementById('ss_rate_limit').value || '3'),
+            rate_limit_window_seconds: parseInt(document.getElementById('ss_rate_window').value || '60'),
+            allowed_protocols: Array.from(document.querySelectorAll('input[name="ss_proto"]:checked')).map(el => el.value),
+        };
+
         try {
             const res = await fetch('/api/settings/save', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ appearance, sync, captcha, telegram, ssl, auto_backup })
+                body: JSON.stringify({ appearance, sync, captcha, telegram, ssl, auto_backup, self_service })
             });
             if (!res.ok) throw new Error(_('error'));
             showToast(_('settings_saved'), 'success');

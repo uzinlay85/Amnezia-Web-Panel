@@ -62,6 +62,7 @@ Configuration panel for system parameters and preferences:
 
 *   **⚡ VPN Protocols**:
     *   **AmneziaWG (AWG 3.1 / AWG 2.0 / AWG Legacy)**: Advanced WireGuard-based protocol with S3/S4 obfuscation to bypass deep packet inspection (DPI). Three coexisting variants — modern AWG 2.0 with full junk-packet masking, and a legacy variant for older clients.
+    *   **Dual-stack (IPv6)**: enabled automatically only when IPv6 works end-to-end — a global address on the host *and* an IPv6 default route inside the protocol container. Docker networks are IPv4-only unless the daemon is configured for IPv6, so a host-only check would hand clients an IPv6 address with no route out. Override with the `AWG_IPV6` environment variable: `auto` (default), `off` to keep every tunnel IPv4-only, `on` to force dual-stack.
     *   **Classic WireGuard**: Standard, high-performance WireGuard protocol for unmatched speed and broad device compatibility with traffic monitoring support.
     *   **Xray (XTLS-Reality)**: Stealthy protocol that masks VPN traffic as standard HTTPS browsing. Pinned to **Xray-core v26.x**; transparently reads both the **panel layout** (`meta.json` + `clientsTable.json`) and the **native Amnezia client layout** (`xray_*.key` files + `clientsTable`), so a node first installed via the official mobile/desktop app can be attached to the panel without re-installation.
     *   **Telemt (Telegram MTProxy)**: High-performance Telegram MTProxy with TLS emulation and comprehensive management (quotas, IP limits, real-time session tracking). Robust install path that auto-configures Docker's official apt/yum repository when needed.
@@ -73,6 +74,7 @@ Configuration panel for system parameters and preferences:
     *   **NGINX + Let's Encrypt**: Reverse-proxy and HTTPS automation with certificate management for secure public endpoints.
 *   **⚙️ Core Server Management**:
     *   **Add / Edit / Delete / Reorder** server entries — drag-and-drop reorder updates `server_id` references in saved connections automatically.
+    *   Every server carries a stable `uid` (assigned on add and backfilled for existing records at startup) for cross-server references that must survive reorder and delete.
     *   **Live ping indicator** next to each server name — non-blocking TCP-connect probe to the SSH port, runs on the asyncio loop in parallel for all servers.
     *   **Clear server** wipes every Amnezia-related container, image and `/opt/amnezia` directory in a single sudo script — works for any current or future `amnezia-*` protocol.
     *   **Reboot** the server directly from the UI.
@@ -105,6 +107,8 @@ Configuration panel for system parameters and preferences:
     *   **Backup / Migrate protocols (Alpha)**: Move protocol configurations between nodes for maintenance, recovery, and migration workflows.
 *   **🔗 Public Sharing**:
     *   Generate password-protected links for users to download their configurations without panel access.
+*   **🔐 Self-Service Security**:
+    *   Self-service users receive VPN peer access to the configured VPN subnet. Keep the panel/admin UI off user-reachable VPN routes unless intended, or constrain access with firewall rules and client `AllowedIPs`.
 *   **🌍 One-click Public Tunnels**:
     *   Open the local panel to the internet from `/settings` using **Cloudflare Quick Tunnel** or **ngrok**.
     *   Shows the local server URL, installation state, running state, and issued public HTTPS URLs directly in the UI.
@@ -188,12 +192,60 @@ docker pull ghcr.io/prvtpro/amnezia-panel:latest
 docker pull ghcr.io/prvtpro/amnezia-panel:latest-warp
 ```
 
+The bundled `docker-compose.yml` sets `DATA_FILE=/app/data/data.json` so panel state lands on the
+`amnezia_data` volume and survives container rebuilds — see [Environment Variables](#-environment-variables)
+for the full list of knobs.
+
 
 ### Initial Login
 *   **Username**: `admin`
 *   **Password**: `admin`
 > [!IMPORTANT]  
 > Secure your panel by changing the default password in the **Users** section immediately after first login.
+
+## 🧰 Environment Variables
+
+Every variable is optional — the panel starts with working defaults. Paths marked `<app dir>` resolve
+next to `app.py`, or next to the executable in the standalone builds from *Installation Method 2*.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SECRET_KEY` | random on each start | Key used to sign session cookies. Without it a fresh key is generated at every start, which logs all admins out on restart — set a long random value in production. |
+| `DATA_FILE` | `<app dir>/data.json` | Path to the JSON state file (servers, users, API tokens, settings). `~` is expanded and missing parent directories are created on first save. |
+| `TUNNEL_STATE_FILE` | `<app dir>/tunnels_state.json` | Path where Cloudflare/ngrok tunnel runtime state (PID, public URL) is persisted between restarts. |
+| `TUNNEL_BIN_DIR` | `<app dir>/bin` | Directory holding the panel-managed `cloudflared` / `ngrok` binaries downloaded from the **Settings** page. |
+| `AWG_IPV6` | `auto` | Dual-stack policy for AWG tunnels: `auto` probes the host and the protocol container, `off` keeps every tunnel IPv4-only, `on` forces dual-stack. |
+
+Two things that are deliberately *not* environment variables: the port the panel listens on and its SSL
+certificates, both configured in **Settings → SSL** and stored in the state file. For ngrok, the authtoken
+comes from **Settings** as well and overrides an inherited `NGROK_AUTHTOKEN`.
+
+Running from source or from a binary:
+
+```bash
+export SECRET_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+export DATA_FILE=/var/lib/amnezia-panel/data.json
+python app.py
+```
+
+With Docker, pass the same variables through `-e`:
+
+```bash
+docker run -d \
+  -p 5000:5000 \
+  -e SECRET_KEY=change-me \
+  -e DATA_FILE=/state/data.json \
+  -v panel_state:/state \
+  ghcr.io/prvtpro/amnezia-panel:latest
+```
+
+Docker Compose additionally reads these from your shell or from an `.env` file next to
+`docker-compose.yml`. They configure Compose itself rather than the panel process:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `APP_PORT` | `5000` | Host port published for the panel container. |
+| `DATA_FILE` | `/app/data/data.json` | Forwarded into the container; keep it under `/app/data` so state stays on the `amnezia_data` volume. |
 
 ## 🔧 Project Details
 
@@ -239,7 +291,7 @@ curl -H "Authorization: Bearer $TOKEN" http://your-panel:5000/api/servers/0/ping
 ### Technology Stack
 *   **Backend**: FastAPI (Python), `asyncio` for concurrent SSH/probe work
 *   **Frontend**: Vanilla JS, Jinja2, Custom CSS (Glassmorphism, full set of CSS animations for promo blocks)
-*   **Database**: Local JSON storage (`data.json`) with an `asyncio.Lock` for thread-safe writes
+*   **Database**: Local JSON storage (`data.json`, path overridable via the `DATA_FILE` environment variable) with an `asyncio.Lock` for thread-safe writes
 *   **SSH Engine**: Paramiko
 
 ### Project Structure
@@ -267,7 +319,8 @@ web-panel/
 
 *   **Reverse Proxy**: It is highly recommended to run the panel behind Nginx/Apache with an SSL certificate.
 *   **SSH Keys**: Use SSH keys rather than passwords for connecting to your VPN servers.
-*   **Secret Key**: Set a custom `SECRET_KEY` environment variable for secure session management.
+*   **Secret Key**: Set a custom `SECRET_KEY` environment variable for secure session management (see [Environment Variables](#-environment-variables)).
+*   **IPv6**: if your servers have global IPv6 but Docker is IPv4-only, leave `AWG_IPV6` at `auto` — the panel probes the container and keeps tunnels IPv4-only rather than blackholing client IPv6. Set `AWG_IPV6=off` to disable dual-stack everywhere.
 *   **API Tokens**: Treat each token like a password — store it in your integration's secret manager. Revoke it from `/settings` if it leaks or the integration is decommissioned. Rotate periodically; tokens inherit admin rights.
 
 ## 🤝 Contributing
@@ -281,4 +334,3 @@ This project is licensed under the **GNU General Public License v3.0** - see the
 
 ---
 *Built with ❤️ for the Amnezia community.*
-
