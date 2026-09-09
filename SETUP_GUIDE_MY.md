@@ -247,19 +247,31 @@ Web Panel ကို HTTP အစား **HTTPS (Secure SSL သော့ခလေ�
 
 ---
 
-### နည်းလမ်း (A) - One-Click Script ဖြင့် အလိုအလျောက် တပ်ဆင်ခြင်း (အလွယ်ကူဆုံး အကြံပြုချက်)
+### နည်းလမ်း (A) - One-Click Universal Script ဖြင့် အလိုအလျောက် တပ်ဆင်ခြင်း (အလွယ်ကူဆုံး အကြံပြုချက်)
 
-DuckDNS (ဥပမာ `awgpannel.duckdns.org`) သို့မဟုတ် မိမိ၏ Custom Domain အတွက် Free Let's Encrypt SSL ထုတ်ယူခြင်း၊ Permission ပေးခြင်း၊ Panel Configuration ပြင်ဆင်ခြင်းနှင့် ရက် ၉၀ ပြည့်တိုင်း အလိုအလျောက် သက်တမ်းတိုးခြင်းတို့ကို **Command တစ်ကြောင်းတည်းဖြင့် အပြီးအစီး** ပြုလုပ်နိုင်ပါသည်:
+DuckDNS (ဥပမာ `awgpannel.duckdns.org`)၊ Cloudflare သို့မဟုတ် မည်သည့် Custom Domain မဆို Server အသစ်တိုင်းတွင် အလွယ်တကူ အသုံးပြုနိုင်ရန် **Universal SSL Setup Script** ကို ဖန်တီးပေးထားပါသည်။ 
 
+ဤ Script သည် DNS ချိတ်ဆက်မှု မှန်မမှန် စစ်ဆေးခြင်း၊ Free Let's Encrypt SSL ထုတ်ယူခြင်း၊ Permission ပေးခြင်း၊ Web Panel Configuration ပြင်ဆင်ခြင်း၊ VPN Client Config များတွင် Domain ဖြင့် အလိုအလျောက် ထွက်လာစေရန် `Host` ပြောင်းပေးခြင်းနှင့် ရက် ၉၀ ပြည့်တိုင်း အလိုအလျောက် သက်တမ်းတိုးခြင်းတို့ကို **အလိုအလျောက် အပြီးအစီး** ဆောင်ရွက်ပေးပါသည်:
+
+#### အသုံးပြုနည်း (၁) - မိမိ Domain Name ကို Command တွင် တိုက်ရိုက် ထည့်သွင်း Run ခြင်း:
 ```bash
-# awgpannel.duckdns.org အတွက် (Default):
-curl -sSL https://raw.githubusercontent.com/uzinlay85/Amnezia-Web-Panel/main/scripts/setup_ssl.sh | sudo bash
-
-# (သို့မဟုတ် အခြား Domain Name ဖြင့် သုံးလိုပါက အနောက်တွင် Domain ထည့်ပေးပါ):
+# <YOUR_DOMAIN> နေရာတွင် မိမိ Domain Name ထည့်ပြီး run ပါ:
 curl -sSL https://raw.githubusercontent.com/uzinlay85/Amnezia-Web-Panel/main/scripts/setup_ssl.sh | sudo bash -s -- <YOUR_DOMAIN>
+
+# ဥပမာ (၁) - DuckDNS အသုံးပြုထားပါက:
+curl -sSL https://raw.githubusercontent.com/uzinlay85/Amnezia-Web-Panel/main/scripts/setup_ssl.sh | sudo bash -s -- awgpannel.duckdns.org
+
+# ဥပမာ (၂) - မိမိ ကိုယ်ပိုင် Domain အသစ် အသုံးပြုထားပါက:
+curl -sSL https://raw.githubusercontent.com/uzinlay85/Amnezia-Web-Panel/main/scripts/setup_ssl.sh | sudo bash -s -- vpn.myserver.com
 ```
 
-*(ပြီးဆုံးပါက Browser မှ `https://awgpannel.duckdns.org:5000` ဖြင့် ချက်ချင်း စတင် အသုံးပြုနိုင်ပါပြီ)*
+#### အသုံးပြုနည်း (၂) - Interactive Prompt ဖြင့် Run ခြင်း:
+Domain Name မထည့်ဘဲ ဒီအတိုင်း run လိုက်ပါက Terminal ထဲတွင် `Domain (e.g. myvpn.duckdns.org): ` ဟု အလိုအလျောက် မေးမြန်းပေးမည် ဖြစ်ပြီး မိမိ Domain ကို ရိုက်ထည့်ပေးနိုင်ပါသည်:
+```bash
+curl -sSL https://raw.githubusercontent.com/uzinlay85/Amnezia-Web-Panel/main/scripts/setup_ssl.sh | sudo bash
+```
+
+*(Script အလုပ်လုပ်ပြီးဆုံးပါက Browser မှ **`https://<YOUR_DOMAIN>:5000`** ဖြင့် လုံခြုံသော အစိမ်းရောင်သော့ခလောက်ဖြင့် ချက်ချင်း စတင် အသုံးပြုနိုင်ပါပြီ)*
 
 ---
 
