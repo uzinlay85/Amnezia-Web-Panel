@@ -36,20 +36,10 @@ sudo apt install -y git python3 python3-pip python3-venv curl
 
 ### အဆင့် ၁.၂: Repository Clone လုပ်ပြီး Virtual Environment ဆောက်ခြင်း
 
-**ရွေးချယ်မှု (A) - Non-Root User (ဥပမာ `zinko`) ဖြင့် Run လိုပါက:**
+*(💡 `cd ~` သည် Root user အတွက်ဖြစ်စေ၊ Non-Root user (ဥပမာ `zinko`) အတွက်ဖြစ်စေ မိမိ၏ သက်ဆိုင်ရာ Home directory သို့ အလိုအလျောက် ရောက်ရှိစေသောကြောင့် **မည်သည့် User ဖြင့်မဆို အောက်ပါ command အတိုင်း တိုက်ရိုက် run နိုင်ပါသည်**)*
+
 ```bash
 cd ~
-git clone https://github.com/uzinlay85/Amnezia-Web-Panel.git
-cd Amnezia-Web-Panel
-
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
-**ရွေးချယ်မှု (B) - Root User ဖြင့် Run လိုပါက:**
-```bash
-cd /root
 git clone https://github.com/uzinlay85/Amnezia-Web-Panel.git
 cd Amnezia-Web-Panel
 
@@ -64,45 +54,25 @@ pip install -r requirements.txt
 
 Panel ကို ၂၄ နာရီ မပြတ် background တွင် run နေစေရန်နှင့် Server reboot ကျသွားပါက အလိုအလျောက် ပွင့်လာစေရန် Service ဆောက်ပါမည်။
 
-### ရွေးချယ်မှု (A) - Non-Root User (ဥပမာ `zinko`) အတွက် Service:
+*(💡 အောက်ပါ command သည် `User=$(whoami)` နှင့် `WorkingDirectory=$(pwd)` ဖြင့် လက်ရှိ User အမည်နှင့် ဖိုင်လမ်းကြောင်းကို **အလိုအလျောက် Detect လုပ်ပေးမည်ဖြစ်၍ Root ရော Non-Root ပါ မည်သည့်အရာမှ ပြင်စရာမလိုဘဲ တိုက်ရိုက် copy-paste run ရုံသာ ဖြစ်ပါသည်**)*
+
 ```bash
-sudo bash -c 'cat << "EOF" > /etc/systemd/system/amnezia-panel.service
+sudo bash -c "cat << EOF > /etc/systemd/system/amnezia-panel.service
 [Unit]
 Description=Amnezia Web Panel Service
 After=network.target
 
 [Service]
 Type=simple
-User=zinko
-WorkingDirectory=/home/zinko/Amnezia-Web-Panel
-ExecStart=/home/zinko/Amnezia-Web-Panel/venv/bin/python app.py
+User=$(whoami)
+WorkingDirectory=$(pwd)
+ExecStart=$(pwd)/venv/bin/python app.py
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
-EOF'
-```
-*(💡 မှတ်ချက်: `zinko` နေရာတွင် မိမိ၏ username အတိုင်း အစားထိုးနိုင်ပါသည်)*
-
-### ရွေးချယ်မှု (B) - Root User အတွက် Service:
-```bash
-sudo bash -c 'cat << "EOF" > /etc/systemd/system/amnezia-panel.service
-[Unit]
-Description=Amnezia Web Panel Service
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/root/Amnezia-Web-Panel
-ExecStart=/root/Amnezia-Web-Panel/venv/bin/python app.py
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF'
+EOF"
 ```
 
 ### Service ကို စတင် (Start & Enable) လုပ်ပါ:
@@ -368,11 +338,7 @@ sudo rm -f /etc/sudoers.d/<YOUR_USER>
 
 #### အဆင့် ၄: Web Panel Source Code & Virtual Environment ကို ဖျက်ပါ
 ```bash
-# Non-Root User အတွက်:
 rm -rf ~/Amnezia-Web-Panel
-
-# Root User အတွက်:
-sudo rm -rf /root/Amnezia-Web-Panel
 ```
 
 #### အဆင့် ၅: (စိတ်ကြိုက်) Firewall Rules များ ပြန်လည်ဖျက်သိမ်းခြင်း
