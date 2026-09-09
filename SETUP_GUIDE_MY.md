@@ -370,9 +370,18 @@ GitHub Web စာမျက်နှာပေါ်ရှိ **"Sync fork"** ခ�
 
 ### 🛠️ အလုံခြုံဆုံး Git Command ဖြင့် Sync ပြုလုပ်နည်း (Best Practice)
 
-GitHub Web ပေါ်မှ သွားနှိပ်မည့်အစား မိမိ၏ စက် (Local PC) သို့မဟုတ် VPS Terminal ပေါ်မှ Git Command များဖြင့် Sync ပြုလုပ်ခြင်းသည် အလုံခြုံဆုံး ဖြစ်ပါသည်:
+#### အဆင့် ၁: Git Identity သတ်မှတ်ထားခြင်း (Server အသစ်တိုင်းတွင် တစ်ကြိမ် ပြုလုပ်ရန်)
+`git merge` ပြုလုပ်သည့်အခါ Git က Merge Commit တစ်ခု ဆောက်ရသောကြောင့် မိမိ၏ အမည်နှင့် Email ကို ကြိုတင် သတ်မှတ်ပေးထားရပါမည် (မသတ်မှတ်ပါက `Committer identity unknown / fatal: empty ident name` ဟု error တက်ပါမည်):
 
-#### အဆင့် ၁: မူရင်း Upstream Repository အား ချိတ်ဆက်ခြင်း (တစ်ကြိမ်သာ ပြုလုပ်ရန် လိုအပ်သည်)
+```bash
+git config --global user.name "zinko"
+git config --global user.email "uzinlay85@gmail.com"
+```
+*(💡 မိမိကြိုက်နှစ်သက်ရာ အမည်နှင့် email ကို ထည့်သွင်းနိုင်ပါသည်)*
+
+---
+
+#### အဆင့် ၂: မူရင်း Upstream Repository အား ချိတ်ဆက်ခြင်း (တစ်ကြိမ်သာ ပြုလုပ်ရန် လိုအပ်သည်)
 ```bash
 cd ~/Amnezia-Web-Panel
 git remote add upstream https://github.com/PRVTPRO/Amnezia-Web-Panel.git
@@ -380,10 +389,12 @@ git remote add upstream https://github.com/PRVTPRO/Amnezia-Web-Panel.git
 # ချိတ်ဆက်မှု မှန်မမှန် စစ်ဆေးပါ
 git remote -v
 ```
-*(အထက်ပါ command အရ `origin` သည် မိမိ၏ Fork repo ဖြစ်ပြီး `upstream` သည် မူရင်း developer ၏ repo ဖြစ်သည်ကို တွေ့ရပါမည်)*
+*(💡 အကယ်၍ `error: remote upstream already exists.` ဟု ပေါ်လာပါက မူရင်း repo နှင့် ချိတ်ဆက်ပြီးသား ဖြစ်နေသောကြောင့် ဖြစ်ပြီး နောက်တစ်ဆင့်သို့ တိုက်ရိုက် ဆက်သွားနိုင်ပါသည်)*
 
-#### အဆင့် ၂: မူရင်း Update များကို လှမ်းဆွဲပြီး ပေါင်းစပ်ခြင်း (Safe Merge)
-မူရင်းဘက်တွင် version အသစ်များ ထွက်လာတိုင်း အောက်ပါအတိုင်း run ပါ-
+---
+
+#### အဆင့် ၃: မူရင်း Update များကို လှမ်းဆွဲပြီး ပေါင်းစပ်ခြင်း (Safe Merge)
+မူရင်း developer ဘက်တွင် version အသစ်များ ထွက်လာတိုင်း အောက်ပါအတိုင်း run ပါ-
 ```bash
 # မူရင်း repo မှ code အသစ်များကို ဆွဲယူခြင်း
 git fetch upstream
@@ -396,7 +407,9 @@ git push origin main
 ```
 *💡 Git သည် မူရင်း feature အသစ်များနှင့် မိမိတို့ ထည့်ထားသော feature များကို ပျက်စီးမှုမရှိဘဲ အလိုအလျောက် ပေါင်းစပ်ပေးသွားပါမည်။*
 
-#### အဆင့် ၃: Merge Conflict (တိုက်ဆိုင်မှု) ကြုံတွေ့ရပါက ဖြေရှင်းနည်း
+---
+
+#### အဆင့် ၄: Merge Conflict (တိုက်ဆိုင်မှု) ကြုံတွေ့ရပါက ဖြေရှင်းနည်း
 အကယ်၍ မူရင်းဘက်မှ ပြင်လိုက်သော ဖိုင်နေရာနှင့် မိမိတို့ ပြင်ထားသော နေရာ အတိအကျ တူညီနေပါက Git က conflict အဖြစ် အသိပေးပါမည်။ ထိုအခါ:
 1. သက်ဆိုင်ရာ ဖိုင်ကို ဖွင့်ကြည့်ပါက `<<<<<<< HEAD` (မိမိ code) နှင့် `>>>>>>> upstream/main` (မူရင်း code) ဟု ပြသနေပါမည်။
 2. နှစ်ဖက်လုံးမှ လိုအပ်သော code များကို ရွေးချယ်ပေါင်းစပ်ပြီး သိမ်းဆည်းပါ။
@@ -407,13 +420,26 @@ git push origin main
    git push origin main
    ```
 
-#### အဆင့် ၄: VPS Production Server ပေါ်တွင် Update ရယူခြင်း
-GitHub Fork ပေါ်သို့ Push လုပ်ပြီးပါက မိမိ VPS Server ပေါ်တွင် အောက်ပါအတိုင်း Update ဆွဲပြီး Restart ချပေးရုံသာ ဖြစ်ပါသည်:
+---
+
+#### အဆင့် ၅: VPS Production Server ပေါ်တွင် Update ရယူခြင်း
+GitHub Fork ပေါ်သို့ Push လုပ်ပြီးပါက မိမိ VPS Server ပေါ်တွင် မည်သည့် merge မှ ထပ်လုပ်စရာမလိုဘဲ အောက်ပါအတိုင်း Update ဆွဲပြီး Restart ချပေးရုံသာ ဖြစ်ပါသည်:
 ```bash
 cd ~/Amnezia-Web-Panel
 git pull origin main
 sudo systemctl restart amnezia-panel
 ```
+
+---
+
+### ❓ မကြာခဏ ကြုံတွေ့ရတတ်သော Git မေးခွန်းများနှင့် အဖြေများ
+
+1. **`error: remote upstream already exists` ဟု ပြနေပါက:**
+   * Error အမှားမဟုတ်ပါ။ မူရင်း upstream ကို စောစောကတည်းက ချိတ်ဆက်ထားပြီးဖြစ်၍ `git fetch upstream` ကို တိုက်ရိုက် ဆက်လုပ်နိုင်ပါပြီ။
+2. **`fatal: empty ident name (for <user@hostname>) not allowed` ဟု ပြနေပါက:**
+   * အဆင့် ၁ တွင် ဖော်ပြထားသည့်အတိုင်း `git config --global user.name "..."` နှင့် `git config --global user.email "..."` ကို run ပေးပါ။
+3. **VPS ပေါ်တွင် `Username for 'https://github.com':` ဟု မေးပြီး ရပ်နေပါက:**
+   * ကီးဘုတ်မှ **`Ctrl + C`** ကို နှိပ်လိုက်ပါ။ VPS သည် Production Server ဖြစ်၍ GitHub ပေါ်သို့ `git push` တင်ရန် မလိုအပ်ပါ (`git pull origin main` သာ လုပ်ရန် လိုအပ်ပါသည်)။ Push တင်ခြင်းကို မိမိ၏ Local PC မှသာ ပြုလုပ်ရပါမည်။
 
 ---
 *Created with ❤️ for Amnezia & Myanmar Internet Freedom.*
