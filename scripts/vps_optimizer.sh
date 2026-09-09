@@ -170,20 +170,29 @@ fi
 # ------------------------------------------------------------------------------
 echo -e "\n${YELLOW}---> [6/7] Configuring UFW Firewall Safely...${NC}"
 
-# Detect active SSH port dynamically so user never gets locked out
-SSH_PORT="22"
-if command -v ss &>/dev/null; then
-    DETECTED_SSH=$(ss -tlpn 2>/dev/null | grep -E 'sshd|ssh' | awk '{print $4}' | awk -F':' '{print $NF}' | head -n 1)
+# Detect active SSH port dynamically (prioritize sshd_config, ignore 127.0.0.1 loopback / X11 ports)
+SSH_PORT=""
+if [ -f /etc/ssh/sshd_config ]; then
+    CONF_PORT=$(grep -Ei "^\s*Port\s+[0-9]+" /etc/ssh/sshd_config | awk '{print $2}' | head -n 1)
+    if [ -n "$CONF_PORT" ] && [ "$CONF_PORT" -gt 0 ] 2>/dev/null; then
+        SSH_PORT="$CONF_PORT"
+    fi
+fi
+# Check drop-in sshd configs (e.g. /etc/ssh/sshd_config.d/*.conf on Ubuntu 22.04/24.04)
+if [ -z "$SSH_PORT" ] && [ -d /etc/ssh/sshd_config.d ]; then
+    DROPIN_PORT=$(grep -Eih "^\s*Port\s+[0-9]+" /etc/ssh/sshd_config.d/*.conf 2>/dev/null | awk '{print $2}' | head -n 1)
+    if [ -n "$DROPIN_PORT" ] && [ "$DROPIN_PORT" -gt 0 ] 2>/dev/null; then
+        SSH_PORT="$DROPIN_PORT"
+    fi
+fi
+if [ -z "$SSH_PORT" ] && command -v ss &>/dev/null; then
+    # Look for listening sshd on non-loopback interfaces (exclude 127.0.0.1 so X11 forwarding port 6010 is not captured)
+    DETECTED_SSH=$(ss -tlpn 2>/dev/null | grep -E 'sshd' | grep -v '127\.0\.0\.1' | awk '{print $4}' | awk -F':' '{print $NF}' | head -n 1)
     if [ -n "$DETECTED_SSH" ] && [ "$DETECTED_SSH" -gt 0 ] 2>/dev/null; then
         SSH_PORT="$DETECTED_SSH"
     fi
 fi
-if [ "$SSH_PORT" = "22" ] && [ -f /etc/ssh/sshd_config ]; then
-    CONF_PORT=$(grep -E "^Port [0-9]+" /etc/ssh/sshd_config | awk '{print $2}' | head -n 1)
-    if [ -n "$CONF_PORT" ]; then
-        SSH_PORT="$CONF_PORT"
-    fi
-fi
+SSH_PORT="${SSH_PORT:-22}"
 
 echo -e "  • Detected SSH Port: ${BOLD}${SSH_PORT}/tcp${NC}"
 
