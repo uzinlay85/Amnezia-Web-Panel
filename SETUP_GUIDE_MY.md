@@ -239,41 +239,82 @@ sudo ufw reload
 
 ## ၁၀။ Web Panel အား HTTPS SSL (`https://<YOUR_DOMAIN>:5000`) ဖွင့်လှစ်အသုံးပြုနည်း
 
-### ⚠️ အဖြစ်များသော ပြဿနာ (`ERR_SSL_PROTOCOL_ERROR`):
-Settings ထဲတွင် "Enable HTTPS" ကို အမှန်ခြစ်ထားသော်လည်း Certificate ဖိုင်လမ်းကြောင်း မထည့်ရသေးခြင်း (သို့မဟုတ်) Placeholder စာသားများသာ ရှိနေပါက Panel သည် HTTP ဖြင့်သာ ပြန်ဖွင့်သောကြောင့် ဤ Error တက်တတ်ပါသည်။
+Web Panel ကို HTTP အစား **HTTPS (Secure SSL သော့ခလောက်စိမ်း)** ဖြင့် အသုံးပြုခြင်းဖြင့် Admin Password၊ Client Keys များနှင့် အချက်အလက်များအားလုံးကို End-to-End Encryption လုပ်ပေးကာ ကြားဖြတ်ဖမ်းယူခံရမည့် အန္တရာယ်မှ အပြည့်အဝ ကာကွယ်ပေးပါသည်။
 
-### 🛠️ စနစ်တကျ ပြင်ဆင်ရန် အဆင့်များ:
+> [!WARNING]
+> **⚠️ အရေးကြီး သတိပြုရန် (Xray vs NGINX):**  
+> သင့် Server တွင် **Xray Protocol** ထည့်သွင်းထားပါက Xray က Port 443 ကို ယူထားသဖြင့် Web Panel ထဲရှိ **NGINX ကို ထပ်မံ Install မလုပ်ပါနှင့်** (Port 443 အချင်းချင်း တိုက်မိပါမည်)။ အောက်ပါနည်းလမ်းသည် Xray ကို မထိခိုက်စေဘဲ Port 80 ဖြင့် Free SSL ရယူကာ Web Panel Port 5000 ပေါ်တွင် HTTPS ကို သီးသန့်ဖွင့်ပေးမည့် အလုံခြုံဆုံး နည်းလမ်း ဖြစ်ပါသည်။
 
-#### အဆင့် ၁၀.၁: Settings ထဲတွင် လမ်းကြောင်းများ အတိအကျ ဖြည့်ပါ
+---
+
+### နည်းလမ်း (A) - One-Click Script ဖြင့် အလိုအလျောက် တပ်ဆင်ခြင်း (အလွယ်ကူဆုံး အကြံပြုချက်)
+
+DuckDNS (ဥပမာ `awgpannel.duckdns.org`) သို့မဟုတ် မိမိ၏ Custom Domain အတွက် Free Let's Encrypt SSL ထုတ်ယူခြင်း၊ Permission ပေးခြင်း၊ Panel Configuration ပြင်ဆင်ခြင်းနှင့် ရက် ၉၀ ပြည့်တိုင်း အလိုအလျောက် သက်တမ်းတိုးခြင်းတို့ကို **Command တစ်ကြောင်းတည်းဖြင့် အပြီးအစီး** ပြုလုပ်နိုင်ပါသည်:
+
+```bash
+# awgpannel.duckdns.org အတွက် (Default):
+curl -sSL https://raw.githubusercontent.com/uzinlay85/Amnezia-Web-Panel/main/scripts/setup_ssl.sh | sudo bash
+
+# (သို့မဟုတ် အခြား Domain Name ဖြင့် သုံးလိုပါက အနောက်တွင် Domain ထည့်ပေးပါ):
+curl -sSL https://raw.githubusercontent.com/uzinlay85/Amnezia-Web-Panel/main/scripts/setup_ssl.sh | sudo bash -s -- <YOUR_DOMAIN>
+```
+
+*(ပြီးဆုံးပါက Browser မှ `https://awgpannel.duckdns.org:5000` ဖြင့် ချက်ချင်း စတင် အသုံးပြုနိုင်ပါပြီ)*
+
+---
+
+### နည်းလမ်း (B) - Manual အဆင့်ဆင့် ကိုယ်တိုင် တပ်ဆင်နည်း
+
+အကယ်၍ Command များကို တစ်ဆင့်ချင်းစီ ကိုယ်တိုင် ပြုလုပ်လိုပါက:
+
+#### အဆင့် ၁၀.၁: Certbot သွင်းပြီး Free SSL ထုတ်ယူပါ
+VPS Terminal တွင် အောက်ပါ command ကို run ပါ:
+```bash
+sudo apt update && sudo apt install -y certbot
+
+# Port 80 မှတစ်ဆင့် SSL ထုတ်ယူခြင်း (<YOUR_DOMAIN> နေရာတွင် မိမိ domain ထည့်ပါ)
+sudo certbot certonly --standalone -d <YOUR_DOMAIN> --agree-tos --register-unsafely-without-email --non-interactive
+
+# Panel Service က ဖတ်ရှုနိုင်ရန် Permissions ပေးပါ
+sudo chmod -R 755 /etc/letsencrypt/archive /etc/letsencrypt/live
+```
+
+#### အဆင့် ၁၀.၂: Web Panel Settings ထဲတွင် လမ်းကြောင်းများ ထည့်ပါ
 1. Web Panel ၏ အပေါ်ဘက် Navigation Bar ရှိ **"Settings" (⚙️)** သို့ သွားပါ။
 2. **"🔒 SSL / HTTPS Settings"** ကဏ္ဍတွင် အောက်ပါအတိုင်း ဖြည့်ပါ:
    - **ENABLE HTTPS:** [✓] **အမှန်ခြစ်ပေးပါ**
    - **PANEL PORT:** `5000`
-   - **DOMAIN NAME:** `<YOUR_DOMAIN>` (ဥပမာ `vpn.example.com`)
+   - **DOMAIN NAME:** `<YOUR_DOMAIN>` (ဥပမာ `awgpannel.duckdns.org`)
    - **SSL CERTIFICATE PATH (.PEM):**
      ```text
-     /opt/amnezia/nginx/letsencrypt/live/<YOUR_DOMAIN>/fullchain.pem
+     /etc/letsencrypt/live/<YOUR_DOMAIN>/fullchain.pem
      ```
    - **PRIVATE KEY PATH (.PEM):**
      ```text
-     /opt/amnezia/nginx/letsencrypt/live/<YOUR_DOMAIN>/privkey.pem
+     /etc/letsencrypt/live/<YOUR_DOMAIN>/privkey.pem
      ```
 3. ညာဘက်အောက်ရှိ **"💾 Save changes"** ကို နှိပ်ပါ။
 
-#### အဆင့် ၁၀.၂: SSL ဖိုင်အား ဖတ်ရှုခွင့် (Permissions) ပေးပြီး Restart ချပါ
-Web Panel ကို Non-root User (ဥပမာ `zinko`) ဖြင့် run ထားပါက SSL key ဖိုင်ကို ဖတ်ခွင့်ရစေရန် VPS Terminal တွင် အောက်ပါ command ကို Run ပေးပါ:
-
+#### အဆင့် ၁၀.၃: Panel ကို Restart ချပြီး ဝင်ရောက် စမ်းသပ်ပါ
 ```bash
-# SSL key ဖိုင်များကို ဖတ်ရှုခွင့်ပေးခြင်း
-sudo chmod -R 755 /opt/amnezia/nginx/letsencrypt
-
-# Panel Service ကို Restart ချပါ
 sudo systemctl restart amnezia-panel
 ```
 
-#### အဆင့် ၁၀.၃: ဝင်ရောက် စမ်းသပ်ပါ
 Browser အသစ်တစ်ခု ဖွင့်ပြီး:
 👉 **`https://<YOUR_DOMAIN>:5000`** ဖြင့် လုံခြုံသော အစိမ်းရောင်သော့ခလောက် (Secure HTTPS) ဖြင့် တိုက်ရိုက် ဝင်ရောက်နိုင်ပါပြီ။
+
+---
+
+#### အဆင့် ၁၀.၄: ရက် ၉၀ ပြည့်တိုင်း အလိုအလျောက် သက်တမ်းတိုးစေရန် Hook ထည့်ခြင်း
+Let's Encrypt Certificate ရက် ၉၀ ပြည့်တိုင်း အလိုအလျောက် သက်တမ်းတိုးပြီး Panel ကို reload လုပ်စေရန်:
+```bash
+sudo bash -c 'cat << "EOF" > /etc/letsencrypt/renewal-hooks/deploy/amnezia-reload.sh
+#!/bin/bash
+chmod -R 755 /etc/letsencrypt/archive /etc/letsencrypt/live
+systemctl restart amnezia-panel 2>/dev/null || true
+EOF'
+sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/amnezia-reload.sh
+```
 
 ---
 
