@@ -2061,6 +2061,8 @@ class AddConnectionRequest(BaseModel):
     protocol: str = 'awg'
     name: str = 'Connection'
     user_id: Optional[str] = None
+    data_limit_gb: Optional[float] = None
+    expiry_date: Optional[str] = None
     telemt_quota: Optional[str] = None
     telemt_max_ips: Optional[int] = None
     telemt_expiry: Optional[str] = None
@@ -2070,8 +2072,12 @@ class AddConnectionRequest(BaseModel):
 
 
 class EditConnectionRequest(BaseModel):
-    protocol: str = 'telemt'
+    protocol: str = 'awg'
     client_id: str = ''
+    name: Optional[str] = None
+    user_id: Optional[str] = None
+    data_limit_gb: Optional[float] = None
+    expiry_date: Optional[str] = None
     telemt_quota: Optional[str] = None
     telemt_max_ips: Optional[int] = None
     telemt_expiry: Optional[str] = None
@@ -2615,6 +2621,52 @@ async def periodic_background_tasks():
                                                 to_disable_uids.append(uid)
                                     except:
                                         pass
+
+                    # Check connection-level data limits
+                    for uc_id, delta, curr_bytes in updates:
+                        if uc_id in uc_map:
+                            conn_item = uc_map[uc_id]
+                            c_limit = conn_item.get('data_limit_bytes')
+                            if c_limit and c_limit > 0 and curr_bytes >= c_limit and not conn_item.get('disabled_by_limit'):
+                                conn_item['disabled_by_limit'] = True
+                                conn_item['disabled_reason'] = 'quota_exceeded'
+                                logger.info(f"Auto-disabling connection {conn_item.get('name')} (quota exceeded: {curr_bytes} >= {c_limit})")
+                                try:
+                                    sid = conn_item['server_id']
+                                    if sid < len(curr_data.get('servers', [])):
+                                        srv = curr_data['servers'][sid]
+                                        ssh_c = get_ssh(srv)
+                                        ssh_c.connect()
+                                        mgr = get_protocol_manager(ssh_c, conn_item['protocol'])
+                                        _manager_call(mgr, 'toggle_client', conn_item['protocol'], conn_item['client_id'], False)
+                                        ssh_c.disconnect()
+                                except Exception as err:
+                                    logger.warning(f"Failed to auto-disable connection {conn_item.get('name')}: {err}")
+
+                    # Check connection-level expiration date
+                    for conn_item in uc_list:
+                        c_exp = conn_item.get('expiry_date')
+                        if c_exp and not conn_item.get('disabled_by_limit'):
+                            try:
+                                c_exp_d = datetime.fromisoformat(c_exp)
+                                if now > c_exp_d:
+                                    conn_item['disabled_by_limit'] = True
+                                    conn_item['disabled_reason'] = 'expired'
+                                    logger.info(f"Auto-disabling expired connection {conn_item.get('name')} (expired at {c_exp})")
+                                    try:
+                                        sid = conn_item['server_id']
+                                        if sid < len(curr_data.get('servers', [])):
+                                            srv = curr_data['servers'][sid]
+                                            ssh_c = get_ssh(srv)
+                                            ssh_c.connect()
+                                            mgr = get_protocol_manager(ssh_c, conn_item['protocol'])
+                                            _manager_call(mgr, 'toggle_client', conn_item['protocol'], conn_item['client_id'], False)
+                                            ssh_c.disconnect()
+                                    except Exception as err:
+                                        logger.warning(f"Failed to auto-disable expired connection {conn_item.get('name')}: {err}")
+                            except Exception:
+                                pass
+
                     save_data(curr_data)
                     
             if to_disable_uids:
@@ -4175,7 +4227,7 @@ async def api_get_connections(request: Request, server_id: int, protocol: str = 
         clients = _manager_call(manager, 'get_clients', protocol)
         ssh.disconnect()
 
-        # Enrich with user info from user_connections
+        # Enrich with user info and limits from user_connections
         user_conns = data.get('user_connections', [])
         users = data.get('users', [])
         users_map = {u['id']: u for u in users}
@@ -4188,6 +4240,11 @@ async def api_get_connections(request: Request, server_id: int, protocol: str = 
                     if u:
                         client['assigned_user'] = u['username']
                         client['assigned_user_id'] = uid
+                    ud = client.setdefault('userData', {})
+                    if uc.get('data_limit_gb') is not None and not ud.get('dataLimitGB'):
+                        ud['dataLimitGB'] = uc.get('data_limit_gb')
+                    if uc.get('expiry_date') and not ud.get('expiryDate'):
+                        ud['expiryDate'] = uc.get('expiry_date')
                     break
         return {'clients': clients}
     except Exception as e:
@@ -4221,26 +4278,38 @@ async def api_add_connection(request: Request, server_id: int, req: AddConnectio
                 max_tcp_conns=req.telemt_max_conns
             )
         elif protocol_base(req.protocol) == 'wireguard':
-            result = manager.add_client(req.name, server['host'])
+            result = manager.add_client(
+                req.name, server['host'],
+                data_limit_gb=req.data_limit_gb,
+                expiry_date=req.expiry_date
+            )
         else:
-            result = manager.add_client(req.protocol, req.name, server['host'], port)
+            result = manager.add_client(
+                req.protocol, req.name, server['host'], port,
+                data_limit_gb=req.data_limit_gb,
+                expiry_date=req.expiry_date
+            )
         ssh.disconnect()
 
         if result.get('config'):
             result.update(config_payloads(result['config'], server, req.protocol))
 
-        # Link connection to user if specified
-        if req.user_id and result.get('client_id'):
+        # Store connection record with limits
+        if result.get('client_id'):
+            limit_bytes = int(req.data_limit_gb * (1024**3)) if req.data_limit_gb and req.data_limit_gb > 0 else None
             conn = {
                 'id': str(uuid.uuid4()),
-                'user_id': req.user_id,
+                'user_id': req.user_id or None,
                 'server_id': server_id,
                 'protocol': req.protocol,
                 'client_id': result['client_id'],
                 'name': req.name,
+                'data_limit_gb': req.data_limit_gb if req.data_limit_gb and req.data_limit_gb > 0 else None,
+                'data_limit_bytes': limit_bytes,
+                'expiry_date': req.expiry_date or None,
                 'created_at': datetime.now().isoformat(),
             }
-            data['user_connections'].append(conn)
+            data.setdefault('user_connections', []).append(conn)
             save_data(data)
 
         return result
@@ -4291,7 +4360,11 @@ async def api_edit_connection(request: Request, server_id: int, req: EditConnect
         ssh.connect()
         manager = get_protocol_manager(ssh, req.protocol)
         
-        edit_params = {}
+        edit_params = {
+            'name': req.name,
+            'data_limit_gb': req.data_limit_gb,
+            'expiry_date': req.expiry_date,
+        }
         if protocol_base(req.protocol) == 'telemt':
             edit_params['telemt_quota'] = req.telemt_quota
             edit_params['telemt_max_ips'] = req.telemt_max_ips
@@ -4300,8 +4373,60 @@ async def api_edit_connection(request: Request, server_id: int, req: EditConnect
             edit_params['user_ad_tag'] = req.telemt_ad_tag
             edit_params['max_tcp_conns'] = req.telemt_max_conns
             
-        result = manager.edit_client(req.protocol, req.client_id, edit_params)
+        result = _manager_call(manager, 'edit_client', req.protocol, req.client_id, edit_params)
+
+        # Auto re-enable connection if expiry date is in future
+        now_date = datetime.now().date()
+        exp_valid = True
+        if req.expiry_date:
+            try:
+                exp_d = datetime.fromisoformat(req.expiry_date).date()
+                if now_date > exp_d:
+                    exp_valid = False
+            except Exception:
+                pass
+        if exp_valid:
+            try:
+                _manager_call(manager, 'toggle_client', req.protocol, req.client_id, True)
+            except Exception:
+                pass
+
         ssh.disconnect()
+
+        # Update user_connections in data.json
+        changed = False
+        limit_bytes = int(req.data_limit_gb * (1024**3)) if req.data_limit_gb and req.data_limit_gb > 0 else None
+        for conn in data.get('user_connections', []):
+            if conn.get('client_id') == req.client_id and conn.get('server_id') == server_id and conn.get('protocol') == req.protocol:
+                if req.name:
+                    conn['name'] = req.name
+                conn['data_limit_gb'] = req.data_limit_gb if req.data_limit_gb and req.data_limit_gb > 0 else None
+                conn['data_limit_bytes'] = limit_bytes
+                conn['expiry_date'] = req.expiry_date or None
+                if req.user_id is not None:
+                    conn['user_id'] = req.user_id or None
+                conn.pop('disabled_by_limit', None)
+                conn.pop('disabled_reason', None)
+                changed = True
+                break
+        if not changed and req.client_id:
+            conn = {
+                'id': str(uuid.uuid4()),
+                'user_id': req.user_id or None,
+                'server_id': server_id,
+                'protocol': req.protocol,
+                'client_id': req.client_id,
+                'name': req.name or 'Connection',
+                'data_limit_gb': req.data_limit_gb if req.data_limit_gb and req.data_limit_gb > 0 else None,
+                'data_limit_bytes': limit_bytes,
+                'expiry_date': req.expiry_date or None,
+                'created_at': datetime.now().isoformat(),
+            }
+            data.setdefault('user_connections', []).append(conn)
+            changed = True
+        if changed:
+            save_data(data)
+
         return result
     except Exception as e:
         logger.exception("Error editing connection")

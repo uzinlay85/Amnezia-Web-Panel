@@ -2109,7 +2109,7 @@ done < "$BW"
 
         return result
 
-    def add_client(self, protocol_type, client_name, server_host, port):
+    def add_client(self, protocol_type, client_name, server_host, port, data_limit_gb=None, expiry_date=None, **kwargs):
         """
         Add a new client/peer to the AWG config.
         Returns the client config as a string for the .conf file.
@@ -2164,6 +2164,11 @@ AllowedIPs = {allowed_ips}
                 'enabled': True,
             }
         }
+        if data_limit_gb is not None and str(data_limit_gb).strip() != '' and float(data_limit_gb) > 0:
+            new_client['userData']['dataLimitGB'] = round(float(data_limit_gb), 2)
+            new_client['userData']['dataLimitBytes'] = int(float(data_limit_gb) * (1024 ** 3))
+        if expiry_date and str(expiry_date).strip():
+            new_client['userData']['expiryDate'] = str(expiry_date).strip()
         if client_ipv6:
             new_client['userData']['clientIpv6'] = client_ipv6
         clients_table.append(new_client)
@@ -2737,6 +2742,47 @@ AllowedIPs = {allowed_ips}
             client.setdefault('userData', {})['clientName'] = new_name
         self._save_clients_table(protocol_type, clients_table)
         return {'status': 'success', 'name': new_name}
+
+    def edit_client(self, protocol_type, client_id, params):
+        """Edit client metadata (name, data limit, expiry date)."""
+        clients_table = self._get_clients_table(protocol_type)
+        client = next((c for c in clients_table if c.get('clientId') == client_id), None)
+        if client is None:
+            conf_peers = self._parse_peers_from_config(protocol_type)
+            if client_id not in conf_peers:
+                raise RuntimeError('Client not found')
+            client = {
+                'clientId': client_id,
+                'userData': {
+                    'clientName': params.get('name') or 'External client',
+                    'clientPrivateKey': '',
+                    'externalClient': True,
+                }
+            }
+            clients_table.append(client)
+
+        ud = client.setdefault('userData', {})
+        if params.get('name'):
+            ud['clientName'] = str(params['name']).strip()
+
+        if 'data_limit_gb' in params:
+            val = params['data_limit_gb']
+            if val is not None and str(val).strip() != '' and float(val) > 0:
+                ud['dataLimitGB'] = round(float(val), 2)
+                ud['dataLimitBytes'] = int(float(val) * (1024 ** 3))
+            else:
+                ud.pop('dataLimitGB', None)
+                ud.pop('dataLimitBytes', None)
+
+        if 'expiry_date' in params:
+            exp = params['expiry_date']
+            if exp and str(exp).strip():
+                ud['expiryDate'] = str(exp).strip()
+            else:
+                ud.pop('expiryDate', None)
+
+        self._save_clients_table(protocol_type, clients_table)
+        return {'status': 'success', 'client': client}
 
     def get_server_status(self, protocol_type):
         """Get detailed status of the AWG server."""
