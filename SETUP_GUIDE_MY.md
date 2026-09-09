@@ -17,6 +17,7 @@
 10. [၁၀။ Web Panel အား HTTPS SSL (`https://<YOUR_DOMAIN>:5000`) ဖွင့်လှစ်အသုံးပြုနည်း](#၁၀-web-panel-အား-https-ssl-httpsyour_domain5000-ဖွင့်လှစ်အသုံးပြုနည်း)
 11. [၁၁။ VPN Keys / Configs များတွင် IP အစား Domain Name ဖြင့် ထွက်ရှိစေနည်း](#၁၁-vpn-keys--configs-များတွင်-ip-အစား-domain-name-ဖြင့်-ထွက်ရှိစေနည်း)
 12. [၁၂။ စနစ်တစ်ခုလုံးကို အပြီးတိုင် Uninstall / Remove ပြုလုပ်နည်း](#၁၂-စနစ်တစ်ခုလုံးကို-အပြီးတိုင်-uninstall--remove-ပြုလုပ်နည်း)
+13. [၁၃။ Fork Repo တွင် မူရင်း Update ရော ကိုယ်ပိုင် Custom Features ပါ မပျက်စီးစေဘဲ Sync လုပ်နည်း (Best Practice)](#၁၃-fork-repo-တွင်-မူရင်း-update-ရော-ကိုယ်ပိုင်-custom-features-ပါ-မပျက်စီးစေဘဲ-sync-လုပ်နည်း-best-practice)
 
 ---
 
@@ -380,15 +381,69 @@ sudo ufw reload
 
 ---
 
-## 🔄 Upstream Repository မှ Update ဆွဲယူနည်း
+## ၁၃။ Fork Repo တွင် မူရင်း Update ရော ကိုယ်ပိုင် Custom Features ပါ မပျက်စီးစေဘဲ Sync လုပ်နည်း (Best Practice)
 
-နောင်တွင် မူရင်း Developer ဆီမှ Update အသစ်များ ထွက်လာပါက မိမိ Server ပေါ်တွင် Update ရယူရန်:
+ဤ Repository သည် မူရင်း Upstream (`PRVTPRO/Amnezia-Web-Panel`) ထံမှ Fork ပြုလုပ်ထားပြီး ကျွန်တော်တို့ဘက်မှ **Data Limit (GB)**၊ **Expiration Date**၊ မြန်မာဘာသာ အထောက်အကူပြု Guide များနှင့် ပြင်ဆင်ချက်များ (Custom Features) ကို ထပ်မံဖြည့်စွက်ထားပါသည်။
 
+အကယ်၍ နောင်တွင် မူရင်း Upstream ဘက်မှ Version အသစ်များ/ပြင်ဆင်ချက်များ ထွက်ပေါ်လာပါက **မိမိတို့ ပြင်ဆင်ဖြည့်စွက်ထားသော Custom Code များ လုံးဝ မပျက်စီးစေဘဲ** Upstream Update များကို အောင်မြင်စွာ ပေါင်းစပ် (Sync/Merge) ရယူနိုင်သော စနစ်တကျ အဆင့်ဆင့် လမ်းညွှန်ဖြစ်ပါသည်။
+
+---
+
+### ⚠️ အရေးကြီး သတိပြုရန် (GitHub Web UI "Sync fork")
+
+GitHub Web စာမျက်နှာပေါ်ရှိ **"Sync fork"** ခလုတ်ကို အသုံးပြုရာတွင်:
+1. **"Update branch" ပေါ်နေပါက:** အန္တရာယ်ကင်းစွာ နှိပ်နိုင်ပါသည်။ Git က မူရင်း Code များနှင့် မိမိတို့ Custom Code များကို အလိုအလျောက် ပေါင်းစပ် (Merge) ပေးပါမည်။
+2. **"Discard commits" ဟု ပေါ်လာပါက:** **လုံးဝ (လုံးဝ) မနှိပ်ပါနှင့်!** ထိုခလုတ်သည် မိမိတို့ ရေးသားထားသော Custom Feature များနှင့် Commit များအားလုံးကို အပြီးတိုင် ဖျက်ပစ်ပြီး မူရင်းအတိုင်း အစားထိုးလိုက်မည် ဖြစ်ပါသည်။
+
+---
+
+### 🛠️ အလုံခြုံဆုံး Git Command ဖြင့် Sync ပြုလုပ်နည်း (Best Practice)
+
+GitHub Web ပေါ်မှ သွားနှိပ်မည့်အစား မိမိ၏ စက် (Local PC) သို့မဟုတ် VPS Terminal ပေါ်မှ Git Command များဖြင့် Sync ပြုလုပ်ခြင်းသည် အလုံခြုံဆုံး ဖြစ်ပါသည်:
+
+#### အဆင့် ၁: မူရင်း Upstream Repository အား ချိတ်ဆက်ခြင်း (တစ်ကြိမ်သာ ပြုလုပ်ရန် လိုအပ်သည်)
 ```bash
 cd ~/Amnezia-Web-Panel
-git pull upstream main
+git remote add upstream https://github.com/PRVTPRO/Amnezia-Web-Panel.git
+
+# ချိတ်ဆက်မှု မှန်မမှန် စစ်ဆေးပါ
+git remote -v
+```
+*(အထက်ပါ command အရ `origin` သည် မိမိ၏ Fork repo ဖြစ်ပြီး `upstream` သည် မူရင်း developer ၏ repo ဖြစ်သည်ကို တွေ့ရပါမည်)*
+
+#### အဆင့် ၂: မူရင်း Update များကို လှမ်းဆွဲပြီး ပေါင်းစပ်ခြင်း (Safe Merge)
+မူရင်းဘက်တွင် version အသစ်များ ထွက်လာတိုင်း အောက်ပါအတိုင်း run ပါ-
+```bash
+# မူရင်း repo မှ code အသစ်များကို ဆွဲယူခြင်း
+git fetch upstream
+
+# မူရင်း main branch နှင့် မိမိတို့ custom code များကို ပေါင်းစပ်ခြင်း
+git merge upstream/main
+
+# ပေါင်းစပ်ပြီးသော code များကို မိမိ GitHub Fork သို့ ပြန်လည် Push လုပ်ခြင်း
+git push origin main
+```
+*💡 Git သည် မူရင်း feature အသစ်များနှင့် မိမိတို့ ထည့်ထားသော feature များကို ပျက်စီးမှုမရှိဘဲ အလိုအလျောက် ပေါင်းစပ်ပေးသွားပါမည်။*
+
+#### အဆင့် ၃: Merge Conflict (တိုက်ဆိုင်မှု) ကြုံတွေ့ရပါက ဖြေရှင်းနည်း
+အကယ်၍ မူရင်းဘက်မှ ပြင်လိုက်သော ဖိုင်နေရာနှင့် မိမိတို့ ပြင်ထားသော နေရာ အတိအကျ တူညီနေပါက Git က conflict အဖြစ် အသိပေးပါမည်။ ထိုအခါ:
+1. သက်ဆိုင်ရာ ဖိုင်ကို ဖွင့်ကြည့်ပါက `<<<<<<< HEAD` (မိမိ code) နှင့် `>>>>>>> upstream/main` (မူရင်း code) ဟု ပြသနေပါမည်။
+2. နှစ်ဖက်လုံးမှ လိုအပ်သော code များကို ရွေးချယ်ပေါင်းစပ်ပြီး သိမ်းဆည်းပါ။
+3. ပြီးလျှင် အောက်ပါအတိုင်း commit လုပ်ပြီး push ပြန်တင်ပေးပါ:
+   ```bash
+   git add .
+   git commit -m "merge: sync upstream updates with custom features"
+   git push origin main
+   ```
+
+#### အဆင့် ၄: VPS Production Server ပေါ်တွင် Update ရယူခြင်း
+GitHub Fork ပေါ်သို့ Push လုပ်ပြီးပါက မိမိ VPS Server ပေါ်တွင် အောက်ပါအတိုင်း Update ဆွဲပြီး Restart ချပေးရုံသာ ဖြစ်ပါသည်:
+```bash
+cd ~/Amnezia-Web-Panel
+git pull origin main
 sudo systemctl restart amnezia-panel
 ```
 
 ---
 *Created with ❤️ for Amnezia & Myanmar Internet Freedom.*
+
