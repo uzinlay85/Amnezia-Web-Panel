@@ -23,6 +23,11 @@
 
 ## ၁။ Linux VPS ပေါ်တွင် Panel စတင်တပ်ဆင်ခြင်း
 
+> [!TIP]
+> **🚀 အကြံပြုချက် (One-Click Auto-Optimizer):**  
+> အောက်ပါ အဆင့်များကို တစ်ခုချင်းစီ မလုပ်ဆောင်မီ သင့် VPS ၏ BBR, IP Forwarding, Swap Memory, Docker Permissions နှင့် Firewall များကို စစ်ဆေးပြီး အလိုအလျောက် ပြင်ဆင်ပေးနိုင်ရန် [VPS_PRE_SETUP_GUIDE_MY.md](VPS_PRE_SETUP_GUIDE_MY.md) တွင် ဖော်ပြထားသော One-Click Script ကို ဦးစွာ run ပေးနိုင်ပါသည်:  
+> `curl -sSL https://raw.githubusercontent.com/uzinlay85/Amnezia-Web-Panel/main/scripts/vps_optimizer.sh | sudo bash`
+
 ### အဆင့် ၁.၁: Packages များ သွင်းယူခြင်း
 ```bash
 sudo apt update && sudo apt upgrade -y
