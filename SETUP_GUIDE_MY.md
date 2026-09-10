@@ -18,6 +18,7 @@
 11. [၁၁။ VPN Keys / Configs များတွင် IP အစား Domain Name ဖြင့် ထွက်ရှိစေနည်း](#၁၁-vpn-keys--configs-များတွင်-ip-အစား-domain-name-ဖြင့်-ထွက်ရှိစေနည်း)
 12. [၁၂။ စနစ်တစ်ခုလုံးကို အပြီးတိုင် Uninstall / Remove ပြုလုပ်နည်း](#၁၂-စနစ်တစ်ခုလုံးကို-အပြီးတိုင်-uninstall--remove-ပြုလုပ်နည်း)
 13. [၁၃။ Fork Repo တွင် မူရင်း Update ရော ကိုယ်ပိုင် Custom Features ပါ မပျက်စီးစေဘဲ Sync လုပ်နည်း (Best Practice)](#၁၃-fork-repo-တွင်-မူရင်း-update-ရော-ကိုယ်ပိုင်-custom-features-ပါ-မပျက်စီးစေဘဲ-sync-လုပ်နည်း-best-practice)
+14. [၁၄။ ၁၂ နာရီတစ်ကြိမ် GitHub မှ အလိုအလျောက် Update ပြုလုပ်ရန် Cron Job တပ်ဆင်နည်း](#၁၄-၁၂-နာရီတစ်ကြိမ်-github-မှ-အလိုအလျောက်-update-ပြုလုပ်ရန်-cron-job-တပ်ဆင်နည်း)
 
 ---
 
@@ -495,5 +496,66 @@ sudo systemctl restart amnezia-panel
    * ကီးဘုတ်မှ **`Ctrl + C`** ကို နှိပ်လိုက်ပါ။ VPS သည် Production Server ဖြစ်၍ GitHub ပေါ်သို့ `git push` တင်ရန် မလိုအပ်ပါ (`git pull origin main` သာ လုပ်ရန် လိုအပ်ပါသည်)။ Push တင်ခြင်းကို မိမိ၏ Local PC မှသာ ပြုလုပ်ရပါမည်။
 
 ---
+
+## ၁၄။ ၁၂ နာရီတစ်ကြိမ် GitHub မှ အလိုအလျောက် Update ပြုလုပ်ရန် Cron Job တပ်ဆင်နည်း
+
+မိမိ VPS ပေါ်ရှိ Amnezia Web Panel အား GitHub ပေါ်တွင် Code အသစ်များ Push တင်လိုက်တိုင်း ၁၂ နာရီတစ်ကြိမ် (ည ၁၂:၀၀ နာရီ နှင့် နေ့လယ် ၁၂:၀၀ နာရီတိုင်း) အလိုအလျောက် Git Pull ဆွဲယူပြီး Panel ကို Restart ချပေးရန် Cron Job တပ်ဆင်နိုင်ပါသည်။
+
+ဤစနစ်သည်:
+- GitHub `origin/main` တွင် Commit အသစ် ရှိမရှိ အရင် စစ်ဆေးပေးပါသည်။
+- Commit အသစ် မရှိပါက မည်သည့်အရာမှ မလုပ်ဘဲ အေးချမ်းစွာ ကျော်သွားပါမည်။
+- Update အသစ် ပါလာပါက အလိုအလျောက် Pull ဆွဲယူပြီး၊ `requirements.txt` ပြောင်းလဲပါက Python Dependencies များကိုပါ သွင်းပေးကာ `amnezia-panel` service ကို Safe Restart ချပေးပါသည်။
+- Update မှတ်တမ်း (Logs) များကို `/var/log/amnezia-autoupdate.log` တွင် စနစ်တကျ သိမ်းဆည်းပေးပါသည်။
+
+---
+
+### နည်းလမ်း (A) - One-Click Command ဖြင့် Cron Job အလိုအလျောက် တပ်ဆင်ခြင်း (အလွယ်ဆုံး ⭐)
+
+VPS Terminal တွင် အောက်ပါ Command တစ်ကြောင်းတည်း run ပေးရုံသာ ဖြစ်ပါသည်:
+
+```bash
+# Repo ရှိပြီးသား VPS ပေါ်တွင်:
+cd ~/Amnezia-Web-Panel && sudo bash scripts/auto_update.sh --install
+
+# သို့မဟုတ် One-liner ဖြင့် တိုက်ရိုက် run လိုပါက:
+curl -sSL https://raw.githubusercontent.com/uzinlay85/Amnezia-Web-Panel/main/scripts/auto_update.sh | sudo bash -s -- --install
+```
+
+---
+
+### နည်းလမ်း (B) - Crontab တွင် Manual ကိုယ်တိုင် ထည့်သွင်းနည်း
+
+အကယ်၍ `crontab -e` ဖြင့် ကိုယ်တိုင် ထည့်သွင်းလိုပါက:
+
+1. VPS Terminal တွင် အောက်ပါအတိုင်း ဖွင့်ပါ:
+   ```bash
+   sudo crontab -e
+   ```
+2. ဖိုင်၏ အောက်ဆုံးတွင် အောက်ပါ စာကြောင်းကို ထည့်သွင်းပြီး သိမ်းဆည်းပါ:
+   ```cron
+   # ၁၂ နာရီတစ်ကြိမ် GitHub မှ အလိုအလျောက် Update ဆွဲပြီး Panel restart ချခြင်း
+   0 */12 * * * cd /home/zinko/Amnezia-Web-Panel && git fetch origin main && [ $(git rev-parse HEAD) != $(git rev-parse origin/main) ] && git pull origin main && systemctl restart amnezia-panel >> /var/log/amnezia-autoupdate.log 2>&1
+   ```
+   *(💡 `/home/zinko/` နေရာတွင် မိမိ user home directory လမ်းကြောင်းအတိုင်း ထည့်ပါ)*
+
+---
+
+### 🔍 Auto-Update အလုပ်လုပ်ပုံနှင့် Log ကြည့်ရှုနည်း
+
+- **Update စစ်ဆေးသည့် Log ကြည့်ရန်:**
+  ```bash
+  tail -f /var/log/amnezia-autoupdate.log
+  ```
+- **ယခုချက်ချင်း Update ရှိမရှိ စမ်းသပ် run ကြည့်ရန်:**
+  ```bash
+  sudo bash ~/Amnezia-Web-Panel/scripts/auto_update.sh --check
+  ```
+- **Cron Job ကို ပြန်လည်ဖျက်သိမ်းလိုပါက:**
+  ```bash
+  sudo bash ~/Amnezia-Web-Panel/scripts/auto_update.sh --uninstall
+  ```
+
+---
 *Created with ❤️ for Amnezia & Myanmar Internet Freedom.*
+
 
