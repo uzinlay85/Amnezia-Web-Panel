@@ -2183,7 +2183,9 @@
             showToast((_('error') || 'Error') + ': ' + err.message, 'error');
         } finally {
             btn.disabled = false;
-            btn.innerHTML = '{{ _("save") }}';
+            // textContent + the runtime helper: a locale whose "save" carries
+            // a quote would break a server-rendered JS string literal.
+            btn.textContent = _('save') || 'Save';
             document.getElementById('renameProtoInput').disabled = false;
         }
     }
@@ -2229,7 +2231,6 @@
             btn.textContent = oldText;
         }
     }
-
 
     function renderWgEasyPreview(res) {
         const esc = s => String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -3620,10 +3621,13 @@
                 protocol: proto, client_id: clientId, enable: enable,
             });
             showToast(enable ? _('connection_enabled') : _('connection_disabled'), 'success');
-            loadConnections();
+            await loadConnections();
         } catch (err) {
-            restore();
             showToast(_('error') + ': ' + err.message, 'error');
+        } finally {
+            // Also on success: if loadConnections() fails the row it was
+            // supposed to rebuild would stay disabled with a spinning bulb.
+            restore();
         }
     }
 
