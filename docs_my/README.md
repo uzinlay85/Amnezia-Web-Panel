@@ -11,6 +11,7 @@
 | **01** | **VPS Pre-Flight Checker & Auto-Optimizer** | Server အသစ်တွင် BBR, IP Forwarding, 4GB Swap (Anti-Crash), Docker Permissions နှင့် Firewall များကို One-Click ဖြင့် အလိုအလျောက် ပြင်ဆင်ပေးခြင်း | [👉 01_VPS_PRE_SETUP_GUIDE.md](01_VPS_PRE_SETUP_GUIDE.md) |
 | **02** | **Setup, Management & Troubleshooting Guide** | Web Panel စတင်ထည့်သွင်းခြင်းမှသည် Systemd Service, NGINX SSL, Fork Sync, Auto-Update Cron Job နှင့် စနစ်တစ်ခုလုံး အပြီးတိုင် Uninstall လုပ်နည်းများ အပါအဝင် အခန်း (၁၄) ခန်း ပြည့်စုံ လမ်းညွှန် | [👉 02_SETUP_AND_TROUBLESHOOTING_GUIDE.md](02_SETUP_AND_TROUBLESHOOTING_GUIDE.md) |
 | **03** | **Client Connection Guide (ဖုန်းနှင့် PC ချိတ်ဆက်နည်း)** | ထုတ်ယူထားသော Xray (VLESS Reality) နှင့် AmneziaWG (AWG 3.1) Keys များကို Android, iOS, Windows များတွင် v2rayNG, V2Box, Nekoray, AmneziaWG App များဖြင့် အမှားအယွင်းမရှိ ချိတ်ဆက်နည်း | [👉 03_CLIENT_CONNECTION_GUIDE.md](03_CLIENT_CONNECTION_GUIDE.md) |
+| **04** | **Settings & User Management (Self-Service လက်စွဲ)** | Settings ထဲရှိ ကဏ္ဍအားလုံး (Appearance, Captcha, Telegram, Tunnels, SSL, Backup, API, Exit Nodes) နှင့် User Roles (Admin/Support/User) အလိုက် Self-Service စနစ် ဖွင့်လှစ် အသုံးပြုနည်း အပြည့်အစုံ | [👉 04_SETTINGS_AND_USER_MANAGEMENT_GUIDE.md](04_SETTINGS_AND_USER_MANAGEMENT_GUIDE.md) |
 
 ---
 
@@ -82,6 +83,13 @@ curl -sSL https://raw.githubusercontent.com/uzinlay85/Amnezia-Web-Panel/main/scr
   - Windows PC (Nekoray / v2rayN)
 - **AmneziaWG (AWG 3.1):** Junk Packet Obfuscation ပါဝင်သော Official AmneziaWG App အသုံးပြုနည်း။
 - **Troubleshooting:** Endpoint Domain vs Raw IP ပြောင်းနည်း၊ Flight Mode Reset ပြုလုပ်နည်းနှင့် အဝိုင်းလည်နေပါက ဖြေရှင်းနည်းများ။
+
+---
+
+### 📕 [04_SETTINGS_AND_USER_MANAGEMENT_GUIDE.md](04_SETTINGS_AND_USER_MANAGEMENT_GUIDE.md)
+- **User Roles ၄ မျိုး:** Admin, Support, User, None (No access) အခန်းကဏ္ဍ ခွဲခြားပုံများ။
+- **Self-Service စနစ် တပ်ဆင်နည်း:** Admin ဘက်မှ User အကောင့် ဖွင့်ပေးပုံနှင့် User ကိုယ်တိုင် Key စီမံခွင့် ဖွင့်နည်း (၃ ဆင့်)။
+- **Settings ကဏ္ဍအားလုံး (၁၁ ခု) ရှင်းလင်းချက်:** Appearance, Captcha, Telegram Bot, Tunnels, SSL, Import Users (Remnawave), Simple Backup, API Tokens, Exit Defaults, Self-Service, About & Updates။
 
 ---
 *Created with ❤️ for Amnezia & Myanmar Internet Freedom.*
