@@ -298,7 +298,7 @@
 
         <div class="form-group" id="ucExistingClientGroup" style="display:none;">
             <label class="form-label">{{ _('select_existing_conn') }}</label>
-            <select class="form-select" id="ucExistingClient">
+            <select class="form-select" id="ucExistingClient" multiple size="6">
                 <option value="">{{ _('loading') }}</option>
             </select>
             <div class="form-hint">{{ _('existing_conn_hint') }}</div>
@@ -348,7 +348,7 @@
 
 <!-- ===== User Connections Modal ===== -->
 <div class="modal-backdrop" id="userConnsModal">
-    <div class="modal" style="max-width:600px;">
+    <div class="modal">
         <div class="modal-header">
             <h2 class="modal-title" id="userConnsTitle">{{ _('user_conns_title') }}</h2>
             <button class="modal-close" onclick="closeModal('userConnsModal')">×</button>
@@ -407,6 +407,10 @@
 {% block scripts %}
 <script>
     let currentUserId = '';
+    // var on purpose: #166 declares the same globals; var redeclaration is
+    // legal either merge order, a duplicate let would be a SyntaxError.
+    var currentConnsUserId = '';
+    var currentConnsUsername = '';
     let currentConfig = '';
     let currentVpnLink = '';
     let currentConfigName = 'connection';
@@ -584,10 +588,10 @@
                                 data-haspassword="${u.has_share_password ? 'true' : 'false'}"
                                 title="${_('share_access')}">📤</button>
                         ${u.id !== "{{ current_user.id }}" ? `
-                            <button class="btn btn-secondary btn-sm btn-icon" onclick="toggleUser(this.dataset)"
+                            <button class="btn btn-secondary btn-sm btn-icon peer-toggle${u.enabled ? '' : ' peer-toggle-off'}" onclick="toggleUser(this.dataset, this)"
                                     data-id="${u.id}" data-enable="${u.enabled ? 'false' : 'true'}"
                                     title="${u.enabled ? _('stop_btn') : _('start_btn')}">
-                                ${u.enabled ? '🔵' : '⚫'}
+                                💡
                             </button>
                             <button class="btn btn-danger btn-sm btn-icon" onclick="deleteUser('${u.id}')" title="${_('delete')}">${ICON_TRASH}</button>
                         ` : ''}
@@ -773,16 +777,29 @@
         }
     }
 
-    async function toggleUser(dataset) {
+    async function toggleUser(dataset, btn) {
+        const userId = dataset.id;
+        const enable = dataset.enable === 'true';
+        const original = btn ? btn.innerHTML : null;
+        // Lock the whole user card and swap the bulb for a spinner
+        const row = btn ? btn.closest('.client-item') : null;
+        if (row) {
+            row.classList.add('client-toggling');
+            row.querySelectorAll('button').forEach(b => b.disabled = true);
+        }
+        if (btn) btn.innerHTML = '<span class="spinner"></span>';
         try {
-            const userId = dataset.id;
-            const enable = dataset.enable === 'true';
             const action = enable ? _('enabling') : _('disabling');
             showToast(`${action}...`, 'info');
             await apiCall(`/api/users/${userId}/toggle`, 'POST', { enabled: enable });
             showToast(enable ? _('user_enabled') : _('user_disabled'), 'success');
             setTimeout(() => window.location.reload(), 500);
         } catch (err) {
+            if (row) {
+                row.classList.remove('client-toggling');
+                row.querySelectorAll('button').forEach(b => b.disabled = false);
+            }
+            if (btn && original !== null) btn.innerHTML = original;
             showToast(`${_('error')}: ` + err.message, 'error');
         }
     }
@@ -791,9 +808,21 @@
         currentUserId = userId;
         document.getElementById('addUserConnTitle').textContent = `${_('add_connection')} — ${username}`;
         document.getElementById('ucName').value = `${username}_vpn`;
-        document.getElementById('ucMode').value = 'new';
+        // Restore the options used for the previous add (mode/server/protocol)
+        let prefs = null;
+        try { prefs = JSON.parse(localStorage.getItem('addUserConnPrefs') || 'null'); } catch (e) {}
+        const modeEl = document.getElementById('ucMode');
+        const serverEl = document.getElementById('ucServer');
+        if (prefs) {
+            if ([...modeEl.options].some(o => o.value === prefs.mode)) modeEl.value = prefs.mode;
+            if ([...serverEl.options].some(o => o.value === String(prefs.server))) serverEl.value = String(prefs.server);
+        } else {
+            modeEl.value = 'new';
+        }
+        updateProtocols(serverEl.value, 'ucProtocol');
+        const protoEl = document.getElementById('ucProtocol');
+        if (prefs && [...protoEl.options].some(o => o.value === prefs.protocol)) protoEl.value = prefs.protocol;
         toggleUCMode();
-        updateProtocols(document.getElementById('ucServer').value, 'ucProtocol');
         openModal('addUserConnModal');
     }
 
@@ -851,11 +880,41 @@
                 name: document.getElementById('ucName').value || 'VPN Connection',
             };
 
+            // Remember the options for the next add
+            try {
+                localStorage.setItem('addUserConnPrefs', JSON.stringify({
+                    mode, server: document.getElementById('ucServer').value, protocol: body.protocol
+                }));
+            } catch (e) {}
+
             if (mode === 'existing') {
-                const clientId = document.getElementById('ucExistingClient').value;
-                if (!clientId) throw new Error(_('select_connection'));
-                body.client_id = clientId;
-            } else if (body.protocol === 'telemt') {
+                const selected = [...document.getElementById('ucExistingClient').selectedOptions]
+                    .map(o => o.value).filter(Boolean);
+                if (!selected.length) throw new Error(_('select_connection'));
+                let ok = 0, failed = 0, lastErr = '';
+                for (const clientId of selected) {
+                    try {
+                        await apiCall(`/api/users/${currentUserId}/connections/add`, 'POST', { ...body, client_id: clientId });
+                        ok++;
+                    } catch (e) {
+                        failed++;
+                        lastErr = e.message;
+                    }
+                }
+                if (!ok) throw new Error(lastErr || _('error'));
+                showToast(failed
+                    ? `${_('conn_linked')}: ${ok}, ${_('error')}: ${failed} (${lastErr})`
+                    : _('conn_linked') + (ok > 1 ? ` (${ok})` : ''), failed ? 'error' : 'success');
+                closeModal('addUserConnModal');
+                refreshUsersList();
+                const connsModal = document.getElementById('userConnsModal');
+                if (connsModal.classList.contains('active') && currentConnsUserId === currentUserId) {
+                    viewUserConnections(currentConnsUserId, currentConnsUsername);
+                }
+                return;
+            }
+
+            if (body.protocol === 'telemt') {
                 body.telemt_quota = document.getElementById('ucTelemtQuota').value || null;
                 body.telemt_max_ips = parseInt(document.getElementById('ucTelemtMaxIps').value) || null;
                 body.telemt_expiry = document.getElementById('ucTelemtExpiry').value || null;
@@ -865,10 +924,12 @@
             }
 
             const result = await apiCall(`/api/users/${currentUserId}/connections/add`, 'POST', body);
-            showToast(mode === 'existing' ? _('conn_linked') : _('connection_created').replace('{}', body.name), 'success');
+            showToast(_('connection_created').replace('{}', body.name), 'success');
             closeModal('addUserConnModal');
 
-            if (result.config) {
+            // Linking an existing peer: no config popup — the admin already
+            // has that config; just refresh the list.
+            if (result.config && mode !== 'existing') {
                 currentConfig = result.config;
                 currentVpnLink = result.vpn_link || '';
                 currentConfigName = document.getElementById('ucName').value.replace(/\s+/g, '_');
@@ -879,7 +940,8 @@
                 openModal('configModal');
                 generateQR(result.config, result.vpn_qr_chunks);
             }
-            setTimeout(() => window.location.reload(), 1000);
+            // Refresh the grid via AJAX — no full page reload.
+            refreshUsersList();
         } catch (err) {
             showToast(`${_('error')}: ` + err.message, 'error');
         } finally {
@@ -889,7 +951,21 @@
         }
     }
 
+    // var on purpose: #167 declares the same globals; var redeclaration is
+    // legal either merge order, a duplicate let would be a SyntaxError.
+    var currentConnsUserId = null;
+    var currentConnsUsername = '';
+
+    function formatConnDate(iso) {
+        if (!iso) return '';
+        const d = new Date(iso);
+        if (isNaN(d)) return '';
+        return d.toLocaleDateString();
+    }
+
     async function viewUserConnections(userId, username) {
+        currentConnsUserId = userId;
+        currentConnsUsername = username;
         document.getElementById('userConnsTitle').textContent = `${_('connections')} — ${username}`;
         const listEl = document.getElementById('userConnsList');
         listEl.innerHTML = `<div style="text-align:center;padding:var(--space-lg);color:var(--text-muted);">${_('loading')}</div>`;
@@ -902,26 +978,115 @@
             }
             listEl.innerHTML = '';
             data.connections.forEach(c => {
+                const sid = Number(c.server_id) || 0;
+                const proto = c.protocol || 'awg';
+                // Show the live peer name from the instance (matched by client
+                // id / IP) — the panel-side record name is just a label.
+                const name = c.peer_name || c.name || 'Connection';
+                const enabled = c.enabled !== false;
+                const ip = (c.allowed_ips || '').split(',')[0].split('/')[0].trim();
+                const maxSpeed = parseFloat(c.max_speed || 0) || 0;
+                const dateStr = formatConnDate(c.created_at);
+                const toggleCls = enabled ? 'peer-toggle' : 'peer-toggle peer-toggle-off';
+                const toggleTitle = enabled ? _('stop_peer_title') : _('start_peer_title');
+                const disabledStyle = enabled ? '' : 'opacity:0.5;';
+                // Deep link: opens the server page on the right instance and
+                // frames this peer's card there.
+                const serverLink = `/server/${sid}?protocol=${encodeURIComponent(proto)}&highlight=${encodeURIComponent(c.client_id)}`;
                 listEl.innerHTML += `
-                    <div class="client-item">
-                        <div class="client-info">
-                            <div class="client-avatar">🔗</div>
+                    <div class="client-item" data-maxspeed="${maxSpeed}">
+                        <div class="client-info" style="${disabledStyle}">
+                            <div class="client-avatar">${escapeHtml((name[0] || '🔗').toUpperCase())}</div>
                             <div>
-                                <div class="client-name">${escapeHtml(c.name || 'Connection')}</div>
+                                <div class="client-name">${escapeHtml(name)}${ip ? ` <span class="client-ip">${escapeHtml(ip)}</span>` : ''}</div>
                                 <div class="client-meta">
-                                    <span>🖥 ${escapeHtml(c.server_name || '')}</span>
-                                    <span>${escapeHtml(c.protocol === 'awg' ? 'AmneziaWG' : (c.protocol === 'awg2' ? 'AmneziaWG 2.0' : (c.protocol === 'awg_legacy' ? 'AWG Legacy' : (c.protocol === 'xray' ? 'Xray' : c.protocol.toUpperCase()))))}</span>
+                                    <span>🖥 <a href="${serverLink}" target="_blank" rel="noopener" style="color:var(--primary); text-decoration:underline;">${escapeHtml(c.server_name || '')}</a></span>
+                                    <span>${escapeHtml(proto === 'awg' ? 'AmneziaWG' : (proto === 'awg2' ? 'AmneziaWG 2.0' : (proto === 'awg_legacy' ? 'AWG Legacy' : (proto === 'xray' ? 'Xray' : (proto === 'wireguard' ? 'WireGuard' : proto.toUpperCase())))))}</span>
+                                    ${dateStr ? `<span>📅 ${dateStr}</span>` : ''}
+                                    <span class="traffic-badge traffic-limit" title="${_('max_speed')}">${maxSpeed > 0 ? '🐢 ' + maxSpeed + ' Mbps' : '⚡<span style="font-size:1.25em; line-height:0;">∞</span>'}</span>
+                                    ${c.data_sent ? `<span class="traffic-badge traffic-down">↓ ${escapeHtml(c.data_sent)}</span>` : ''}
+                                    ${c.data_received ? `<span class="traffic-badge traffic-up">↑ ${escapeHtml(c.data_received)}</span>` : ''}
                                 </div>
                             </div>
                         </div>
                         <div class="client-actions">
-                            <button class="btn btn-secondary btn-sm btn-icon" onclick="showUserConnectionConfig(${Number(c.server_id) || 0}, '${escapeJs(c.client_id)}', '${escapeJs(c.protocol)}', '${escapeJs(c.name || 'VPN')}')" title="${_('config')}">📄</button>
+                            <button class="btn btn-secondary btn-sm btn-icon" onclick="renameUserConnection(${sid}, '${escapeJs(c.client_id)}', '${escapeJs(proto)}', '${escapeJs(name)}')" title="${_('rename')}">${ICON_PENCIL}</button>
+                            <button class="btn btn-secondary btn-sm btn-icon" onclick="showUserConnectionConfig(${sid}, '${escapeJs(c.client_id)}', '${escapeJs(proto)}', '${escapeJs(name)}')" title="${_('config')}">📄</button>
+                            <button class="btn btn-secondary btn-sm btn-icon ${toggleCls}" onclick="toggleUserConnection(${sid}, '${escapeJs(c.client_id)}', '${escapeJs(proto)}', ${!enabled}, this)" title="${toggleTitle}">💡</button>
+                            <button class="btn btn-secondary btn-sm btn-icon" onclick="unlinkUserConnection(${sid}, '${escapeJs(c.client_id)}', '${escapeJs(proto)}', '${escapeJs(name)}')" title="${_('unlink_key_title').replace('{}', name).replace('{}', currentConnsUsername)}">✂️</button>
+                            <button class="btn btn-danger btn-sm btn-icon" onclick="removeUserConnection(${sid}, '${escapeJs(c.client_id)}', '${escapeJs(proto)}', '${escapeJs(name)}')" title="${_('delete')}">${ICON_TRASH}</button>
                         </div>
                     </div>
                 `;
             });
         } catch (err) {
             listEl.innerHTML = `<div style="color:#ef4444;padding:var(--space-md);">${_('error')}: ${err.message}</div>`;
+        }
+    }
+
+    async function unlinkUserConnection(serverId, clientId, proto, name) {
+        if (!confirm(_('unlink_confirm'))) return;
+        try {
+            await apiCall(`/api/users/${currentConnsUserId}/connections/unlink`, 'POST', {
+                server_id: serverId, protocol: proto, client_id: clientId,
+            });
+            showToast(_('conn_unlinked'), 'success');
+            viewUserConnections(currentConnsUserId, currentConnsUsername);
+        } catch (err) {
+            showToast(`${_('error')}: ` + err.message, 'error');
+        }
+    }
+
+    function lockConnRow(btn, lock) {
+        const row = btn ? btn.closest('.client-item') : null;
+        if (!row) return null;
+        row.classList.toggle('client-toggling', lock);
+        row.querySelectorAll('button').forEach(b => b.disabled = lock);
+        return row;
+    }
+
+    async function toggleUserConnection(serverId, clientId, proto, enable, btn) {
+        const original = btn.innerHTML;
+        lockConnRow(btn, true);
+        btn.innerHTML = '<span class="spinner"></span>';
+        try {
+            showToast(enable ? _('enable_connection_progress') : _('disable_connection_progress'), 'info');
+            await apiCall(`/api/servers/${serverId}/connections/toggle`, 'POST', {
+                protocol: proto, client_id: clientId, enable: enable,
+            });
+            showToast(enable ? _('connection_enabled') : _('connection_disabled'), 'success');
+            viewUserConnections(currentConnsUserId, currentConnsUsername);
+        } catch (err) {
+            lockConnRow(btn, false);
+            btn.innerHTML = original;
+            showToast(`${_('error')}: ` + err.message, 'error');
+        }
+    }
+
+    async function renameUserConnection(serverId, clientId, proto, oldName) {
+        const newName = prompt(_('rename'), oldName);
+        if (!newName || newName.trim() === '' || newName === oldName) return;
+        try {
+            await apiCall(`/api/servers/${serverId}/connections/rename`, 'POST', {
+                protocol: proto, client_id: clientId, new_name: newName.trim(),
+            });
+            showToast(_('success'), 'success');
+            viewUserConnections(currentConnsUserId, currentConnsUsername);
+        } catch (err) {
+            showToast(`${_('error')}: ` + err.message, 'error');
+        }
+    }
+
+    async function removeUserConnection(serverId, clientId, proto, name) {
+        if (!confirm(`${_('delete')}: ${name}?`)) return;
+        try {
+            await apiCall(`/api/servers/${serverId}/connections/remove`, 'POST', {
+                protocol: proto, client_id: clientId,
+            });
+            showToast(_('success'), 'success');
+            viewUserConnections(currentConnsUserId, currentConnsUsername);
+        } catch (err) {
+            showToast(`${_('error')}: ` + err.message, 'error');
         }
     }
 

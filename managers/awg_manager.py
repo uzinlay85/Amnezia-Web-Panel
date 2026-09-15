@@ -41,6 +41,8 @@ AWG_DEFAULTS = {
     'subnet_ipv6_ip': 'fd42:8:1::1',
     'subnet_ipv6_cidr': '64',    'dns1': '1.1.1.1',
     'dns2': '1.0.0.1',
+    # Default IPv6 resolver appended to client DNS when the tunnel is dual-stack
+    'dns6': '2606:4700:4700::1111',
     # AWG obfuscation parameters
     'junk_packet_count': '3',
     'junk_packet_min_size': '10',
@@ -783,9 +785,20 @@ fi
         """
         v = self.AWG_MODULE_VERSION
         script = f"""
-if modinfo amneziawg >/dev/null 2>&1; then
-    echo "KERNEL_MODULE: ok: already present ($(modinfo amneziawg | awk '/^version:/{{print $2; exit}}'))"
+CUR=$(modinfo amneziawg 2>/dev/null | awk '/^version:/{{print $2; exit}}')
+if [ -n "$CUR" ] && [ "$CUR" = "{v}" ]; then
+    echo "KERNEL_MODULE: ok: already present ($CUR)"
     exit 0
+fi
+if [ -n "$CUR" ]; then
+    # An older/newer module is present: upgrade. The module can only be
+    # unloaded when no tunnel uses it; otherwise defer the upgrade.
+    if ! modprobe -r amneziawg 2>/dev/null; then
+        echo "KERNEL_MODULE: skipped: version $CUR present but in use by running tunnels; stop all AWG containers and reinstall to upgrade to {v}"
+        exit 0
+    fi
+    dkms remove "amneziawg/$CUR" --all >/dev/null 2>&1 || true
+    echo "KERNEL_MODULE: upgrading from $CUR"
 fi
 if command -v mokutil >/dev/null 2>&1 && mokutil --sb-state 2>/dev/null | grep -qi 'enabled'; then
     echo "KERNEL_MODULE: skipped: Secure Boot enabled (unsigned module would not load)"
@@ -947,7 +960,7 @@ done
         return info
 
     def install_protocol(self, protocol_type, port=None, awg_params=None,
-                         mtu=None, dns=None, special_junk=None):
+                         mtu=None, dns=None, special_junk=None, dns6=None):
         """
         Full installation of AWG or AWG-Legacy protocol.
         Steps: install docker -> prepare host -> build container ->
@@ -1021,6 +1034,30 @@ done
         else:
             results.append(f"Kernel module failed, userspace mode (amneziawg-go): {km.split(':', 1)[-1].strip()}")
 
+        # Step 2.6: warn about sibling AWG containers whose image still carries
+        # awg-tools of another version than the host kernel module - such a
+        # pair fails setconf with EINVAL and the tunnel silently stays down
+        # (the new start.sh self-heals via userspace, but a stale image should
+        # be rebuilt by reinstalling that instance).
+        module_v = self._host_awg_module_version()
+        if module_v and base_proto in (self.AWG, self.AWG2, self.AWG3):
+            out, _, _ = self.ssh.run_sudo_command(
+                "docker ps --format '{{.Names}}' | grep -E '^amnezia-awg' || true"
+            )
+            for cname in out.split():
+                if cname == self._container_name(protocol_type):
+                    continue
+                tv, _, _ = self.ssh.run_sudo_command(
+                    f"docker exec {cname} sh -c \"awg --version 2>/dev/null | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+' | head -1\" 2>/dev/null"
+                )
+                tools_v = tv.strip()
+                if tools_v and tools_v != module_v:
+                    results.append(
+                        f"! {cname}: awg-tools {tools_v} vs kernel module {module_v} mismatch - "
+                        f"the tunnel self-heals in userspace mode on restart, but reinstall "
+                        f"this instance to rebuild its image and keep the fast kernel datapath."
+                    )
+
         # Step 3: Remove old container if exists
         if self.check_protocol_installed(protocol_type):
             results.append("Removing old container...")
@@ -1084,7 +1121,7 @@ done
             "No usable IPv6 (host or Docker), tunnel will be IPv4-only"
         )
         self._configure_container(protocol_type, port, awg_params, ipv6=ipv6_enabled,
-                                  mtu=mtu, dns=dns)
+                                  mtu=mtu, dns=dns, dns6=dns6)
         results.append("AWG configured")
 
         # Step 7: Upload and run start script
@@ -1139,7 +1176,7 @@ done
         )
 
     def _configure_container(self, protocol_type, port, awg_params, ipv6=False,
-                             mtu=None, dns=None):
+                             mtu=None, dns=None, dns6=None):
         """Configure the AWG container (generate keys and server config)."""
         container_name = self._container_name(protocol_type)
         wg_bin = self._wg_binary(protocol_type)
@@ -1170,6 +1207,10 @@ done
             f"# MTU = {mtu or AWG_DEFAULTS['mtu']}\n"
             f"# DNS = {dns or self._default_dns()}\n"
         )
+        # IPv6 DNS for dual-stack tunnels, stored the same comment way;
+        # _get_dns6 reads it back when building client configs.
+        if ipv6:
+            client_defaults_lines += f"# DNS6 = {AWG_DEFAULTS['dns6']}\n"
 
         address_line = f"{subnet_ip}/{subnet_cidr}"
         if ipv6:
@@ -1363,11 +1404,30 @@ SUBNET6=$(grep '^Address' {config_path} | head -1 | tr ',' '\n' | grep ':' | sed
 # kill daemons in case of restart
 {quick_bin} down {config_path} 2>/dev/null
 
+IFACE=$(basename {config_path} .conf)
+
 # start daemons if configured
-if [ -f {config_path} ]; then {quick_bin} up {config_path}; fi
+if [ -f {config_path} ]; then
+  {quick_bin} up {config_path}
+  # Self-heal: when awg-tools and the host kernel module disagree on the
+  # version (e.g. module upgraded to 3.1 while the image still carries old
+  # tools), setconf fails with EINVAL and the tunnel silently stays down.
+  # Detect the mismatch and retry in userspace mode (amneziawg-go) - slower,
+  # but the clients keep their internet.
+  if ! ip link show "$IFACE" >/dev/null 2>&1; then
+    TOOLS_V=$(awg --version 2>/dev/null | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+' | head -1)
+    MOD_V=$(cat /sys/module/amneziawg/version 2>/dev/null || true)
+    if [ -n "$MOD_V" ] && [ -n "$TOOLS_V" ] && [ "$TOOLS_V" != "$MOD_V" ]; then
+      echo "! awg-tools $TOOLS_V vs kernel module $MOD_V mismatch"
+      if grep -q WG_FORCE_USERSPACE "$(command -v {quick_bin})" 2>/dev/null; then
+        echo "! retrying in userspace mode (amneziawg-go)"
+        WG_FORCE_USERSPACE=1 {quick_bin} up {config_path}
+      fi
+    fi
+  fi
+fi
 
 # Allow traffic on the TUN interface
-IFACE=$(basename {config_path} .conf)
 iptables -A INPUT -i $IFACE -j ACCEPT
 iptables -A FORWARD -i $IFACE -j ACCEPT
 iptables -A OUTPUT -o $IFACE -j ACCEPT
@@ -2592,7 +2652,10 @@ AllowedIPs = {allowed_ips}
 
         # Standard fields (dual-stack when the client has an IPv6 address)
         address_line = f"{client_ip}/32" + (f", {client_ipv6}/128" if client_ipv6 else "")
-        dns_line = dns + (", 2606:4700:4700::1111" if client_ipv6 else "")
+        dns6 = self._get_dns6(protocol_type) if client_ipv6 else ""
+        # Guard against duplicates: a manually saved client config may
+        # already carry the v6 resolver inside userData.dns.
+        dns_line = dns + (", " + dns6 if dns6 and dns6 not in dns else "")
         config_lines = [
             f"Address = {address_line}",
             f"DNS = {dns_line}",
@@ -2688,7 +2751,10 @@ PersistentKeepalive = 25
 
         # Standard fields (dual-stack when the client has an IPv6 address)
         address_line = f"{client_ip}/32" + (f", {client_ipv6}/128" if client_ipv6 else "")
-        dns_line = dns + (", 2606:4700:4700::1111" if client_ipv6 else "")
+        dns6 = self._get_dns6(protocol_type, ud) if client_ipv6 else ""
+        # Guard against duplicates: a manually saved client config may
+        # already carry the v6 resolver inside userData.dns.
+        dns_line = dns + (", " + dns6 if dns6 and dns6 not in dns else "")
         config_lines = [
             f"Address = {address_line}",
             f"DNS = {dns_line}",
@@ -2969,6 +3035,16 @@ AllowedIPs = {allowed_ips}
             return user_data['dns']
         return self._read_config_key(protocol_type, 'DNS') or self._default_dns()
 
+    def _get_dns6(self, protocol_type, user_data=None):
+        """IPv6 DNS appended to client configs on dual-stack tunnels.
+
+        Priority: per-client override (userData.dns6) > `# DNS6 = ...` line in
+        the server config (written at install when IPv6 is enabled) > built-in
+        default (Cloudflare v6)."""
+        if user_data and user_data.get('dns6'):
+            return user_data['dns6']
+        return self._read_config_key(protocol_type, 'DNS6') or AWG_DEFAULTS['dns6']
+
     def get_awg_settings(self, protocol_type):
         """Client-facing AWG settings currently stored in the server config."""
         params = self._get_awg_params_from_config(protocol_type)
@@ -2976,6 +3052,7 @@ AllowedIPs = {allowed_ips}
         settings = {
             'mtu': self._get_mtu(protocol_type),
             'dns': self._get_dns(protocol_type),
+            'dns6': self._get_dns6(protocol_type),
             'default_i1': AWG_DEFAULT_I1,
             'supports_special_junk': self._base_protocol(protocol_type) != self.AWG_LEGACY,
             # an instance behind an exit link cannot carry more than the link
@@ -2986,7 +3063,7 @@ AllowedIPs = {allowed_ips}
             settings[key] = params.get(key, '')
         return settings
 
-    def update_awg_settings(self, protocol_type, mtu=None, dns=None, special_junk=None):
+    def update_awg_settings(self, protocol_type, mtu=None, dns=None, special_junk=None, dns6=None):
         """Rewrite MTU/DNS/I1-I5 in the server config and apply them live.
 
         I1-I5 go to the kernel through `awg syncconf`, so peers stay up; MTU
@@ -3019,6 +3096,9 @@ AllowedIPs = {allowed_ips}
         if dns is not None:
             value = str(dns).strip()
             replaced['DNS'] = f"# DNS = {value}" if value else None
+        if dns6 is not None:
+            value = str(dns6).strip()
+            replaced['DNS6'] = f"# DNS6 = {value}" if value else None
         if junk is not None:
             for key in SPECIAL_JUNK_KEYS:
                 value = junk.get(key)
