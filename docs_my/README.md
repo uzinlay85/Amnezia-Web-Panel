@@ -12,6 +12,9 @@
 | **02** | **Setup, Management & Troubleshooting Guide** | Web Panel စတင်ထည့်သွင်းခြင်းမှသည် Systemd Service, NGINX SSL, Fork Sync, Auto-Update Cron Job နှင့် စနစ်တစ်ခုလုံး အပြီးတိုင် Uninstall လုပ်နည်းများ အပါအဝင် အခန်း (၁၄) ခန်း ပြည့်စုံ လမ်းညွှန် | [👉 02_SETUP_AND_TROUBLESHOOTING_GUIDE.md](02_SETUP_AND_TROUBLESHOOTING_GUIDE.md) |
 | **03** | **Client Connection Guide (ဖုန်းနှင့် PC ချိတ်ဆက်နည်း)** | ထုတ်ယူထားသော Xray (VLESS Reality) နှင့် AmneziaWG (AWG 3.1) Keys များကို Android, iOS, Windows များတွင် v2rayNG, V2Box, Nekoray, AmneziaWG App များဖြင့် အမှားအယွင်းမရှိ ချိတ်ဆက်နည်း | [👉 03_CLIENT_CONNECTION_GUIDE.md](03_CLIENT_CONNECTION_GUIDE.md) |
 | **04** | **Settings & User Management (Self-Service လက်စွဲ)** | Settings ထဲရှိ ကဏ္ဍအားလုံး (Appearance, Captcha, Telegram, Tunnels, SSL, Backup, API, Exit Nodes) နှင့် User Roles (Admin/Support/User) အလိုက် Self-Service စနစ် ဖွင့်လှစ် အသုံးပြုနည်း အပြည့်အစုံ | [👉 04_SETTINGS_AND_USER_MANAGEMENT_GUIDE.md](04_SETTINGS_AND_USER_MANAGEMENT_GUIDE.md) |
+| **05** | **AmneziaWG & Outline Disconnect / UFW Fix** | အစပိုင်းတွင် သုံး၍ရပြီး နာရီပိုင်းကြာလျှင် Webpage ဖွင့်မရတော့သည့် UFW Forwarding Drop ပြဿနာနှင့် အပြီးတိုင် ဖြေရှင်းနည်း | [👉 05_VPN_DISCONNECT_UFW_TROUBLESHOOTING.md](05_VPN_DISCONNECT_UFW_TROUBLESHOOTING.md) |
+| **06** | **VPS Monitoring, Logging & Security Guide** | Log များ စောင့်ကြည့်ခြင်း၊ System Performance (CPU/RAM/Disk/Network) စစ်ဆေးခြင်းနှင့် Hacker Attack / Port Scan ကာကွယ်နည်းများ | [👉 06_VPS_MONITORING_AND_LOGGING_GUIDE.md](06_VPS_MONITORING_AND_LOGGING_GUIDE.md) |
+| **07** | **Cloudflare CDN + 3X-UI Setup Guide** | ATOM/MPT ISP DPI နှင့် VPS IP Block / DDoS Null-Route များကို Cloudflare Free CDN (VLESS-WebSocket) ဖြင့် ကျော်လွှားတပ်ဆင်နည်း | [👉 07_CLOUDFLARE_3XUI_SETUP_GUIDE.md](07_CLOUDFLARE_3XUI_SETUP_GUIDE.md) |
 
 ---
 
@@ -90,6 +93,24 @@ curl -sSL https://raw.githubusercontent.com/uzinlay85/Amnezia-Web-Panel/main/scr
 - **User Roles ၄ မျိုး:** Admin, Support, User, None (No access) အခန်းကဏ္ဍ ခွဲခြားပုံများ။
 - **Self-Service စနစ် တပ်ဆင်နည်း:** Admin ဘက်မှ User အကောင့် ဖွင့်ပေးပုံနှင့် User ကိုယ်တိုင် Key စီမံခွင့် ဖွင့်နည်း (၃ ဆင့်)။
 - **Settings ကဏ္ဍအားလုံး (၁၁ ခု) ရှင်းလင်းချက်:** Appearance, Captcha, Telegram Bot, Tunnels, SSL, Import Users (Remnawave), Simple Backup, API Tokens, Exit Defaults, Self-Service, About & Updates။
+
+---
+
+### 📓 [05_VPN_DISCONNECT_UFW_TROUBLESHOOTING.md](05_VPN_DISCONNECT_UFW_TROUBLESHOOTING.md)
+- **UFW Forwarding Policy Fix:** နာရီပိုင်းကြာလျှင် Connected ဖြစ်ပြီး အင်တာနက်မထွက်တော့သည့် ပြဿနာ အကြောင်းရင်း။
+- **Permanent Solution:** `/etc/default/ufw` တွင် `DEFAULT_FORWARD_POLICY="ACCEPT"` သတ်မှတ်ခြင်းနှင့် `/etc/ufw/sysctl.conf` ပြင်ဆင်နည်း။
+
+---
+
+### 📒 [06_VPS_MONITORING_AND_LOGGING_GUIDE.md](06_VPS_MONITORING_AND_LOGGING_GUIDE.md)
+- **VPS စောင့်ကြည့်စစ်ဆေးခြင်း:** CPU, RAM, Disk နှင့် Network Real-time Monitoring Commands (`htop`, `nload`, `iotop`)။
+- **Logs & Security:** Fail2ban စစ်ဆေးခြင်း၊ Auth Logs ဖတ်ရှုခြင်းနှင့် Hacker Port Scanning ကာကွယ်နည်းများ။
+
+---
+
+### 🌐 [07_CLOUDFLARE_3XUI_SETUP_GUIDE.md](07_CLOUDFLARE_3XUI_SETUP_GUIDE.md)
+- **Cloudflare CDN + VLESS-WebSocket:** ATOM/MPT ISP DPI နှင့် VPS IP Block / DDoS Null-Route များကို ကျော်လွှားတပ်ဆင်နည်း။
+- **1-Click Installer Script:** `scripts/install_3xui_cloudflare.sh` ဖြင့် 3X-UI နှင့် Cloudflare CDN အလိုအလျောက် တပ်ဆင်နည်း။
 
 ---
 *Created with ❤️ for Amnezia & Myanmar Internet Freedom.*
