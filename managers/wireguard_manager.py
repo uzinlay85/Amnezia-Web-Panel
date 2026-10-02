@@ -101,6 +101,11 @@ docker --version
 
     def check_container_running(self):
         """Check if WireGuard container is running."""
+        _st_fn = getattr(self.ssh, 'docker_container_state', None)
+        if _st_fn:
+            _st = _st_fn(self.CONTAINER_NAME)
+            if _st is not None:
+                return _st[1]
         out, _, code = self.ssh.run_sudo_command(
             f"docker ps --filter name=^{self.CONTAINER_NAME}$ --format '{{{{.Status}}}}'"
         )
@@ -108,6 +113,11 @@ docker --version
 
     def check_protocol_installed(self):
         """Check if protocol is installed (container exists)."""
+        _st_fn = getattr(self.ssh, 'docker_container_state', None)
+        if _st_fn:
+            _st = _st_fn(self.CONTAINER_NAME)
+            if _st is not None:
+                return _st[0]
         out, _, code = self.ssh.run_sudo_command(
             f"docker ps -a --filter name=^{self.CONTAINER_NAME}$ --format '{{{{.Names}}}}'"
         )
@@ -783,10 +793,13 @@ tail -f /dev/null
 
         return clients_table
 
-    def add_client(self, client_name, server_host, data_limit_gb=None, expiry_date=None, **kwargs):
+    def add_client(self, client_name, server_host, public_port=None, data_limit_gb=None, expiry_date=None, **kwargs):
         """
         Add a new client/peer to the WireGuard config.
         Returns the client config string.
+
+        `public_port` is the port clients dial when it differs from the
+        listen port read from the server config.
         """
         # Generate client keys
         client_priv_key, client_pub_key = generate_wg_keypair()
@@ -850,7 +863,7 @@ MTU = {mtu}
 PublicKey = {server_pub_key}
 PresharedKey = {psk}
 AllowedIPs = 0.0.0.0/0, ::/0
-Endpoint = {server_host}:{port}
+Endpoint = {server_host}:{public_port or port}
 PersistentKeepalive = 25
 """
         return {
@@ -860,12 +873,13 @@ PersistentKeepalive = 25
             'config': client_config,
         }
 
-    def get_client_config(self, client_id, server_host, port=None):
+    def get_client_config(self, client_id, server_host, port=None, public_port=None):
         """Reconstruct client config from stored data.
 
         `port` is optional: when omitted (direct calls) the listen port is
         read from the server config; when passed by the panel (which already
-        knows the instance port) it is used for the Endpoint.
+        knows the instance port) it is used for the Endpoint. `public_port`
+        wins over both: it is the port clients must dial.
         """
         clients_table = self._get_clients_table()
         client = next((c for c in clients_table if c.get('clientId') == client_id), None)
@@ -902,7 +916,7 @@ MTU = {mtu}
 PublicKey = {server_pub_key}
 PresharedKey = {psk}
 AllowedIPs = 0.0.0.0/0, ::/0
-Endpoint = {server_host}:{port}
+Endpoint = {server_host}:{public_port or port}
 PersistentKeepalive = 25
 """
         return config
@@ -1132,7 +1146,13 @@ AllowedIPs = {client_ip}/32
                         if 'ListenPort' in line:
                             info['port'] = line.split('=')[1].strip()
                             break
-                    info['clients_count'] = len(self._get_clients_table())
+                    # Count conf-only peers too (they render as 'External'):
+                    # the table alone understates the real peer count.
+                    clients = self._get_clients_table()
+                    known = {c.get('clientId') for c in clients}
+                    conf_peers = self._parse_peers_from_config()
+                    info['clients_count'] = len(known | set(conf_peers))
+                    info['external_count'] = len(set(conf_peers) - known)
                 except Exception as e:
                     info['error'] = str(e)
 

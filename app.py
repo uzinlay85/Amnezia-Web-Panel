@@ -49,7 +49,15 @@ from managers.backup_manager import BackupManager
 import telegram_bot as tg_bot
 
 from exit_link_service import ExitLinkError, ExitLinkService
+from mail_service import (
+    DEFAULT_MAIL_SETTINGS,
+    MailError,
+    MailOptions,
+    MailService,
+    merge_mail_settings,
+)
 from pwa import build_manifest
+from captcha_challenges import captcha_challenges
 from connection_service import (
     ConnectionService,
     DEFAULT_SELF_SERVICE_SETTINGS,
@@ -74,6 +82,7 @@ OPENAPI_TAGS = [
     {"name": "Self-service", "description": "Endpoints called by a regular user for their own data (the /my surface)."},
     {"name": "Sharing", "description": "Public, token-protected configuration sharing for end users — no panel session required."},
     {"name": "Settings", "description": "Panel-wide settings, Telegram bot, Remnawave sync, JSON backup/restore."},
+    {"name": "Email", "description": "SMTP delivery of configs and proxy links — to one user or to every user with an address."},
     {"name": "API Tokens", "description": "Bearer tokens for external integrations. Send the token in `Authorization: Bearer <token>`; tokens have admin-equivalent rights and are tied to the admin user that created them."},
 ]
 
@@ -137,7 +146,9 @@ class CachedStaticFiles(StaticFiles):
                 else 'public, max-age=3600, must-revalidate')
         return response
 
-app.mount("/static", CachedStaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
+# Bundled resources live beside __file__, not beside the PyInstaller executable.
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+app.mount("/static", CachedStaticFiles(directory=STATIC_DIR), name="static")
 templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
 
 if getattr(sys, 'frozen', False):
@@ -148,7 +159,7 @@ else:
 DATA_FILE = os.path.abspath(os.path.expanduser(
     os.environ.get('DATA_FILE') or os.path.join(application_path, 'data.json')
 ))
-CURRENT_VERSION = "v1.6.7"
+CURRENT_VERSION = "v1.7.3"
 
 # Custom protocol instance names: the rename modal caps input at 64 chars.
 CUSTOM_PROTOCOL_NAME_MAX = 64
@@ -234,6 +245,9 @@ def load_data():
     settings.setdefault('captcha', {'enabled': False})
     settings.setdefault('exit_nodes', {'default_exit_uid': ''})
     settings.setdefault('telegram', {'token': '', 'enabled': False})
+    mail = settings.setdefault('mail', dict(DEFAULT_MAIL_SETTINGS))
+    for key, value in DEFAULT_MAIL_SETTINGS.items():
+        mail.setdefault(key, value)
     settings.setdefault('ssl', {
         'enabled': False,
         'domain': '',
@@ -1041,9 +1055,20 @@ def next_protocol_key(protocols: dict, base: str) -> str:
     return protocol_key(base, idx)
 
 
-def protocol_display_name(protocol: str) -> str:
+# The official Amnezia client has no separate AWG 3 container: it installs
+# AWG 3.x into amnezia-awg2 and only the config (HeaderProtectionKey) differs.
+AWG3_IN_AWG2_NAME = 'AmneziaWG 3 (amnezia-awg2)'
+
+
+def is_awg3_in_awg2(protocol: str, header_protection=False) -> bool:
+    return protocol_base(protocol) == 'awg2' and bool(header_protection)
+
+
+def protocol_display_name(protocol: str, header_protection=False) -> str:
     base = protocol_base(protocol)
     idx = protocol_instance(protocol)
+    if is_awg3_in_awg2(protocol, header_protection):
+        return AWG3_IN_AWG2_NAME if idx <= 1 else f'{AWG3_IN_AWG2_NAME} #{idx}'
     names = {
         'awg': 'AmneziaWG',
         'awg2': 'AmneziaWG 2.0',
@@ -1175,6 +1200,50 @@ def _manager_call(manager, method, protocol, *args, **kwargs):
 AWG_PROTOCOLS = ('awg', 'awg2', 'awg3', 'awg_legacy')
 
 
+# A public host is an IP (v4, or v6 in the brackets an endpoint needs to stay
+# readable next to the port) or a DNS name. Anything else -- a scheme, a path,
+# a space, a bare IPv6 -- would be copied verbatim into client configs, where
+# it reads as a valid endpoint and simply never connects.
+PUBLIC_HOST_MAX = 253
+PUBLIC_HOST_RE = re.compile(r'^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9][A-Za-z0-9._-]*)$')
+
+
+def normalize_public_host(value):
+    """Validated public host, or '' when the field is left empty."""
+    host = str(value or '').strip()
+    if not host:
+        return ''
+    if len(host) > PUBLIC_HOST_MAX or not PUBLIC_HOST_RE.match(host):
+        raise ValueError('Public host must be an IP address or a host name')
+    return host
+
+
+def normalize_public_port(value):
+    """Validated public port as a string, or '' when the field is left empty."""
+    port = str(value or '').strip()
+    if not port:
+        return ''
+    if not port.isdigit() or not 1 <= int(port) <= 65535:
+        raise ValueError('Public port must be a number between 1 and 65535')
+    return port
+
+
+def protocol_public_endpoint(server, protocol):
+    """The address clients must dial for one protocol instance: (host, port).
+
+    Both default to what the panel itself uses -- the server address it opens
+    SSH to, and the instance's own listen port (the returned port is None then,
+    so managers keep using it). An instance can live somewhere else: a second
+    IP on the same box, a port forward, a domain name. `public_host` and
+    `public_port` on the instance record carry that, and every config and link
+    handed to a client follows them.
+    """
+    info = (server.get('protocols') or {}).get(protocol) or {}
+    host = str(info.get('public_host') or '').strip() or server.get('host', '')
+    public_port = str(info.get('public_port') or '').strip() or None
+    return host, public_port
+
+
 def join_dns(dns1, dns2):
     """Join the two DNS fields into the `a, b` form used in configs."""
     parts = [str(value).strip() for value in (dns1, dns2) if value and str(value).strip()]
@@ -1208,10 +1277,12 @@ AWG_CONFIG_KEYS = (
 )
 
 
-def protocol_short_name(protocol: str) -> str:
+def protocol_short_name(protocol: str, header_protection=False) -> str:
     """Short protocol tag for the server name, e.g. `AWG3`."""
     base = protocol_base(protocol)
     idx = protocol_instance(protocol)
+    if is_awg3_in_awg2(protocol, header_protection):
+        base = 'awg3'
     names = {
         'awg': 'AWG',
         'awg2': 'AWG2',
@@ -1233,7 +1304,8 @@ def protocol_short_name(protocol: str) -> str:
 def connection_display_name(server=None, protocol=None) -> str:
     """`<node> <container>`, e.g. `nl-01 AWG3` -- the name the client will show."""
     node = str((server or {}).get('name') or (server or {}).get('host') or '').strip()
-    tag = protocol_short_name(protocol) if protocol else ''
+    record = ((server or {}).get('protocols') or {}).get(protocol) or {} if protocol else {}
+    tag = protocol_short_name(protocol, record.get('header_protection')) if protocol else ''
     return ' '.join(part for part in (node, tag) if part)
 
 
@@ -1556,7 +1628,27 @@ self_service_connections = ConnectionService(
     get_protocol_manager=get_protocol_manager,
     manager_call=_manager_call,
     generate_vpn_link=generate_vpn_link,
+    protocol_public_endpoint=protocol_public_endpoint,
 )
+
+
+mail_svc = MailService(
+    load_data=load_data,
+    get_ssh=get_ssh,
+    get_protocol_manager=get_protocol_manager,
+    manager_call=_manager_call,
+    config_payloads=config_payloads,
+    protocol_display_name=protocol_display_name,
+    protocol_base=protocol_base,
+    translate=_t,
+)
+
+
+def _mail_error_response(exc: MailError, lang: str):
+    """MailError carries a translation key, so the browser gets the message in
+    the admin's language and the machine-readable key next to it."""
+    return JSONResponse({'error': _t(str(exc), lang), 'code': str(exc)},
+                        status_code=exc.status_code)
 
 
 def _exit_manager_factory(ssh):
@@ -1775,12 +1867,13 @@ async def perform_mass_operations(delete_uids: List[str] = None, toggle_uids: Li
             for c_req in ops['create']:
                 proto_info = srv.get('protocols', {}).get(c_req['protocol'], {})
                 port = proto_info.get('port', '55424')
+                pub_host, pub_port = protocol_public_endpoint(srv, c_req['protocol'])
                 manager = get_protocol_manager(ssh, c_req['protocol'])
                 
                 if c_req['protocol'] == 'wireguard':
-                    res = await asyncio.to_thread(manager.add_client, c_req['name'], srv['host'])
+                    res = await asyncio.to_thread(manager.add_client, c_req['name'], pub_host, public_port=pub_port)
                 else:
-                    res = await asyncio.to_thread(_manager_call, manager, 'add_client', c_req['protocol'], c_req['name'], srv['host'], port)
+                    res = await asyncio.to_thread(_manager_call, manager, 'add_client', c_req['protocol'], c_req['name'], pub_host, port, public_port=pub_port)
                 
                 if res.get('client_id'):
                     new_conn = {
@@ -1958,6 +2051,8 @@ def get_current_user(request: Request):
     data = load_data()
     for u in data.get('users', []):
         if u['id'] == user_id:
+            if not u.get('enabled', True) or u.get('role') == 'none':
+                return None
             return u
     return None
 
@@ -1970,7 +2065,7 @@ def static_version():
     page renders new markup against old rules.
     """
     newest = 0.0
-    for root, _dirs, files in os.walk(os.path.join(application_path, 'static')):
+    for root, _dirs, files in os.walk(STATIC_DIR):
         for name in files:
             try:
                 newest = max(newest, os.path.getmtime(os.path.join(root, name)))
@@ -2014,7 +2109,7 @@ def web_manifest(request: Request):
 @app.get('/sw.js')
 def service_worker():
     """Root-scoped service worker. Must not live under /static/ or scope is confined."""
-    path = os.path.join(application_path, 'static', 'sw.js')
+    path = os.path.join(STATIC_DIR, 'sw.js')
     return FileResponse(
         path,
         media_type='text/javascript',
@@ -2168,6 +2263,12 @@ class RenameProtocolRequest(BaseModel):
     name: str = ''  # empty = reset to default
 
 
+class PublicEndpointRequest(BaseModel):
+    protocol: str = ''
+    public_host: str = ''  # empty = the server's own address
+    public_port: str = ''  # empty = the instance's listen port
+
+
 class AddConnectionRequest(BaseModel):
     protocol: str = 'awg'
     name: str = 'Connection'
@@ -2292,6 +2393,20 @@ class TelegramSettings(BaseModel):
     enabled: bool = False
 
 
+class MailSettings(BaseModel):
+    enabled: bool = False
+    host: str = ''
+    port: int = Field(587, ge=1, le=65535)
+    security: str = 'starttls'      # none | starttls | ssl
+    username: str = ''
+    # Empty keeps the stored password: the settings page never echoes it back.
+    password: str = ''
+    from_email: str = ''
+    from_name: str = ''
+    reply_to: str = ''
+    timeout_seconds: int = Field(30, ge=5, le=300)
+
+
 class AutoBackupSettings(BaseModel):
     enabled: bool = False
     interval_hours: int = 24
@@ -2340,6 +2455,7 @@ class SaveSettingsRequest(BaseModel):
     auto_backup: AutoBackupSettings = AutoBackupSettings()
     self_service: SelfServiceSettings = SelfServiceSettings()
     exit_nodes: ExitNodesSettings = ExitNodesSettings()
+    mail: MailSettings = MailSettings()
 
 
 class ToggleUserRequest(BaseModel):
@@ -2368,6 +2484,30 @@ class AddUserConnectionRequest(BaseModel):
     telemt_secret: Optional[str] = None
     telemt_ad_tag: Optional[str] = None
     telemt_max_conns: Optional[int] = None
+
+
+class MailSendRequest(BaseModel):
+    include_configs: bool = True
+    include_links: bool = True
+    subject: str = ''
+    message: str = ''
+    # Overrides the address on the user record for this one send.
+    recipient: Optional[str] = None
+
+
+class MailBulkRequest(BaseModel):
+    include_configs: bool = True
+    include_links: bool = True
+    subject: str = ''
+    message: str = ''
+    # None means "every user that has an address".
+    user_ids: Optional[List[str]] = None
+    only_enabled: bool = True
+    skip_without_connections: bool = True
+
+
+class MailTestRequest(BaseModel):
+    recipient: str = ''
 
 
 class CreateApiTokenRequest(BaseModel):
@@ -2822,9 +2962,25 @@ def login_page(request: Request):
 
 @app.get("/set_lang/{lang}", tags=["System Templates"])
 def set_lang(lang: str, request: Request):
+    if lang not in TRANSLATIONS:
+        return JSONResponse({'error': 'Unsupported language'}, status_code=400)
+    # Referer is untrusted: keep only a same-origin path, never an external URL.
     ref = request.headers.get("referer", "/")
-    response = RedirectResponse(url=ref)
-    response.set_cookie(key="lang", value=lang, max_age=31536000)
+    target = '/'
+    try:
+        parsed = urllib.parse.urlsplit(ref)
+        origin = urllib.parse.urlsplit(str(request.base_url))
+        same_origin = (parsed.scheme, parsed.netloc) == (origin.scheme, origin.netloc)
+        relative = not parsed.scheme and not parsed.netloc
+        if (same_origin or relative) and not any(c in ref for c in (chr(92), chr(13), chr(10))):
+            path = parsed.path or '/'
+            if path.startswith('/') and not path.startswith('//'):
+                target = urllib.parse.urlunsplit(('', '', path, parsed.query, ''))
+    except ValueError:
+        pass
+    response = RedirectResponse(url=target)
+    response.set_cookie(key="lang", value=lang, max_age=31536000,
+                        httponly=True, secure=request.url.scheme == 'https', samesite='lax')
     return response
 
 
@@ -2904,7 +3060,9 @@ def api_captcha(request: Request):
     # 2 is a multiplier for the image resolution size
     generator = CaptchaGenerator(2)
     captcha = generator.gen_captcha_image(difficult_level=2)
-    request.session['captcha_answer'] = captcha.characters
+    request.session.pop('captcha_answer', None)  # Remove legacy disclosed answers.
+    captcha_challenges.discard(request.session.pop('captcha_challenge_id', None))
+    request.session['captcha_challenge_id'] = captcha_challenges.issue(captcha.characters)
     
     img_bytes = io.BytesIO()
     captcha.image.save(img_bytes, format='PNG')
@@ -2917,13 +3075,12 @@ def api_captcha(request: Request):
 def api_login(request: Request, req: LoginRequest):
     data = load_data()
     captcha_settings = data.get('settings', {}).get('captcha', {})
+    request.session.pop('captcha_answer', None)  # Never accept legacy cookie answers.
     if captcha_settings.get('enabled') is True:
-        answer = request.session.get('captcha_answer')
+        challenge_id = request.session.pop('captcha_challenge_id', None)
         lang = request.cookies.get('lang', 'ru')
-        if not answer or not req.captcha or answer.lower() != req.captcha.lower():
-            request.session.pop('captcha_answer', None)
+        if not captcha_challenges.consume(challenge_id, req.captcha):
             return JSONResponse({'error': _t('invalid_captcha', lang)}, status_code=400)
-        request.session.pop('captcha_answer', None)
 
     for u in data.get('users', []):
         # Users without a password (role 'none', record-only) can never log in.
@@ -3333,6 +3490,8 @@ def api_check_server(request: Request, server_id: int):
             merged['base_protocol'] = db_proto.get('base_protocol') or protocol_base(proto)
             merged['instance'] = db_proto.get('instance') or protocol_instance(proto)
             merged['display_name'] = db_proto.get('display_name') or protocol_display_name(proto)
+            if protocol_base(proto) == 'awg2' and 'header_protection' in merged:
+                merged['display_name'] = protocol_display_name(proto, merged['header_protection'])
             merged['container_name'] = db_proto.get('container_name') or protocol_container_name(proto)
             if protocol_base(proto) == 'adguard':
                 for key in ('web_port', 'mode', 'internal_ip', 'expose_web'):
@@ -3389,6 +3548,15 @@ def api_check_server(request: Request, server_id: int):
                 return proto, merge_saved_protocol_status(proto, {}, str(e)), str(e)
 
         protocols_to_check = list(dict.fromkeys(BASE_PROTOCOLS + list(server.get('protocols', {}).keys())))
+        # One batched round trip for all AWG containers (ps snapshot + configs
+        # + clientsTables) instead of 3-5 SSH commands per instance - this is
+        # what made /check take seconds on high-latency servers.
+        try:
+            awg_protos = [p for p in protocols_to_check if protocol_base(p) in AWG_PROTOCOLS]
+            if awg_protos:
+                AWGManager(ssh).prefetch_awg_state(awg_protos)
+        except Exception as e:
+            logger.warning(f"AWG status prefetch failed, falling back to per-instance checks: {e}")
         # Run checks sequentially. Several managers use the same SSH connection;
         # checking them in parallel through one SSH object can produce false
         # negatives and previously caused dynamic AWG instances to be removed.
@@ -3405,7 +3573,7 @@ def api_check_server(request: Request, server_id: int):
                         'awg_params': result.get('awg_params', {}),
                         'base_protocol': protocol_base(proto),
                         'instance': protocol_instance(proto),
-                        'display_name': protocol_display_name(proto),
+                        'display_name': protocol_display_name(proto, result.get('header_protection')),
                         'container_name': protocol_container_name(proto),
                     }
                     if protocol_base(proto) == 'adguard':
@@ -3428,6 +3596,13 @@ def api_check_server(request: Request, server_id: int):
                             'obfuscation': result.get('obfuscation'),
                         })
                     changed = True
+                record = server['protocols'][proto]
+                if protocol_base(proto) == 'awg2' and 'header_protection' in result:
+                    header_protection = bool(result['header_protection'])
+                    if bool(record.get('header_protection')) != header_protection:
+                        record['header_protection'] = header_protection
+                        record['display_name'] = protocol_display_name(proto, header_protection)
+                        changed = True
             else:
                 if proto in server['protocols']:
                     if should_preserve_saved_protocol(proto, result, err):
@@ -3532,6 +3707,13 @@ async def api_install_protocol(request: Request, server_id: int, req: InstallPro
         install_base = protocol_base(install_protocol)
         # A reinstalled entry keeps its exit link and is re-linked below
         previous_link = None
+        # Where an instance is published is a property of the network, not
+        # of this install: reinstalling must not move clients back to the
+        # address the panel happens to manage the box through.
+        previous_record = (server.get('protocols') or {}).get(install_protocol) or {}
+        previous_public = {key: previous_record[key]
+                           for key in ('public_host', 'public_port')
+                           if previous_record.get(key)}
         # Reinstalling an instance is not the same as adding one: an instance a
         # user deliberately left unlinked must not be linked behind their back.
         reinstall = install_protocol in (server.get('protocols') or {})
@@ -3573,7 +3755,9 @@ async def api_install_protocol(request: Request, server_id: int, req: InstallPro
                 port=req.port,
                 tls_emulation=req.tls_emulation if req.tls_emulation is not None else True,
                 tls_domain=req.tls_domain,
-                max_connections=req.max_connections if req.max_connections is not None else 0
+                max_connections=req.max_connections if req.max_connections is not None else 0,
+                public_host=previous_public.get('public_host'),
+                public_port=previous_public.get('public_port'),
             )
         elif install_base == 'xray':
             install_args = ()
@@ -3672,6 +3856,7 @@ async def api_install_protocol(request: Request, server_id: int, req: InstallPro
         proto_record['container_name'] = protocol_container_name(install_protocol)
         if previous_link:
             proto_record['exit_link'] = previous_link
+        proto_record.update(previous_public)
         server['protocols'][install_protocol] = proto_record
         result['protocol'] = install_protocol
         result['base_protocol'] = install_base
@@ -4064,6 +4249,16 @@ async def api_uninstall_protocol(request: Request, server_id: int, req: Protocol
         if req.protocol in server.get('protocols', {}):
             del server['protocols'][req.protocol]
             save_data(data)
+        # The instance is gone: its peers are gone with it, so connections
+        # pointing at this (server, protocol) would dangle forever — the
+        # modal would list a phantom that errors with 'Client not found'
+        # on every action. Purge them like server/user deletion does.
+        data['user_connections'] = [
+            c for c in data.get('user_connections', [])
+            if not (c.get('server_id') == server_id
+                    and c.get('protocol') == req.protocol)
+        ]
+        save_data(data)
         ssh.disconnect()
         if base == 'exit':
             detached = await exit_link_svc.detach_entries_for_exit(server.get('uid'), 'exit_uninstalled')
@@ -4166,7 +4361,7 @@ def api_protocol_backup_download(request: Request, server_id: int, req: BackupDo
         return JSONResponse({'error': 'Invalid backup filename'}, status_code=400)
     ssh = None
     tmp_path = None
-    tmp_remote = f'/tmp/{filename}'
+    remote_temp_dir = None
     remote_path = f'{manager.BACKUP_ROOT}/{safe_proto}/{filename}'
     try:
         data = load_data()
@@ -4175,6 +4370,10 @@ def api_protocol_backup_download(request: Request, server_id: int, req: BackupDo
         server = data['servers'][server_id]
         ssh = get_ssh(server)
         ssh.connect()
+        # mktemp creates a mode-0700 directory owned by the SSH/SFTP user.
+        # The root-owned readable copy stays inaccessible to other local users.
+        remote_temp_dir = ssh._make_private_temp_dir()
+        tmp_remote = remote_temp_dir + '/' + filename
         quoted_remote = shlex.quote(remote_path)
         quoted_tmp = shlex.quote(tmp_remote)
         # `sudo <a> && <b>` elevates only `<a>`; the whole chain needs one shell
@@ -4190,9 +4389,6 @@ def api_protocol_backup_download(request: Request, server_id: int, req: BackupDo
             sftp.get(tmp_remote, tmp_path)
         finally:
             sftp.close()
-            ssh.run_sudo_command(f"rm -f {quoted_tmp}")
-            ssh.disconnect()
-            ssh = None
         return FileResponse(
             tmp_path,
             media_type='application/gzip',
@@ -4209,7 +4405,16 @@ def api_protocol_backup_download(request: Request, server_id: int, req: BackupDo
         return JSONResponse({'error': str(e)}, status_code=500)
     finally:
         if ssh:
-            ssh.disconnect()
+            try:
+                if remote_temp_dir:
+                    _, cleanup_error, cleanup_code = ssh.run_sudo_command(
+                        'rm -rf -- ' + shlex.quote(remote_temp_dir))
+                    if cleanup_code != 0:
+                        logger.warning('Remote backup staging cleanup failed: %s', cleanup_error)
+            except Exception:
+                logger.warning('Remote backup staging cleanup failed', exc_info=True)
+            finally:
+                ssh.disconnect()
 
 
 @app.post('/api/servers/{server_id}/backups/upload', tags=["Protocols"])
@@ -4363,6 +4568,8 @@ def api_container_toggle(request: Request, server_id: int, req: ContainerToggleR
         else:
             ssh.run_sudo_command(f"docker start {container}")
             action = 'started'
+        if hasattr(ssh, 'docker_ps_invalidate'):
+            ssh.docker_ps_invalidate()
         ssh.disconnect()
         return {'status': 'success', 'action': action, 'container': container}
     except Exception as e:
@@ -4428,6 +4635,35 @@ async def api_ssh_cooldown(request: Request, server_id: int):
     data['servers'][server_id]['ssh_cooldown_base'] = seconds
     save_data(data)
     return {'ok': True, 'ssh_cooldown_base': seconds}
+
+
+# Allowed live peer-list refresh intervals (seconds); 0 disables polling.
+PEER_POLL_INTERVALS = (0, 5, 10, 15, 20, 45, 120, 300, 600)
+
+
+@app.post('/api/servers/{server_id}/peer_poll_interval', tags=["Servers"])
+async def api_peer_poll_interval(request: Request, server_id: int):
+    """Set the per-server live peer-list refresh interval (0 = off).
+
+    Polling is opt-in: every poll is a full connections read over SSH, which
+    is cheap on fast servers but painful on slow/flaky ones."""
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    try:
+        body = await request.json()
+        seconds = int(body.get('seconds', 0))
+    except Exception:
+        return JSONResponse({'error': 'Invalid value'}, status_code=400)
+    if seconds not in PEER_POLL_INTERVALS:
+        return JSONResponse(
+            {'error': 'Value must be one of ' + ','.join(map(str, PEER_POLL_INTERVALS))},
+            status_code=400)
+    data = load_data()
+    if server_id >= len(data['servers']):
+        return JSONResponse({'error': 'Server not found'}, status_code=404)
+    data['servers'][server_id]['peer_poll_interval'] = seconds
+    save_data(data)
+    return {'ok': True, 'peer_poll_interval': seconds}
 
 
 @app.post('/api/servers/{server_id}/host_tuning', tags=["Protocols"])
@@ -4520,6 +4756,67 @@ def api_rename_protocol(request: Request, server_id: int, req: RenameProtocolReq
         return {'status': 'success', 'protocol': proto, 'name': name}
     except Exception as e:
         logger.exception("Error renaming protocol")
+        return JSONResponse({'error': str(e)}, status_code=500)
+
+
+@app.post('/api/servers/{server_id}/protocol/public-endpoint', tags=["Protocols"])
+async def api_set_protocol_public_endpoint(request: Request, server_id: int, req: PublicEndpointRequest):
+    """Set or clear the address clients dial for one protocol instance.
+
+    Both fields are optional and empty means "as before": the server's own
+    address, the instance's listen port. Useful when an instance answers on a
+    second IP of the same box, behind a port forward, or under a domain name.
+    """
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    try:
+        data = load_data()
+        if server_id >= len(data['servers']):
+            return JSONResponse({'error': 'Server not found'}, status_code=404)
+        server = data['servers'][server_id]
+        proto = req.protocol.strip()
+        if proto not in server.get('protocols', {}):
+            return JSONResponse({'error': 'Protocol not found'}, status_code=404)
+        try:
+            host = normalize_public_host(req.public_host)
+            port = normalize_public_port(req.public_port)
+        except ValueError as e:
+            return JSONResponse({'error': str(e)}, status_code=400)
+
+        record = server['protocols'][proto]
+        for key, value in (('public_host', host), ('public_port', port)):
+            if value:
+                record[key] = value
+            else:
+                record.pop(key, None)
+        save_data(data)
+
+        # Telemt composes its own tg:// links from config.toml, so for that
+        # protocol the override reaches clients only after the file on the
+        # server carries it. The record is saved either way: a box that is down
+        # right now must not lose the setting, and the next install re-applies
+        # it.
+        warning = ''
+        if protocol_base(proto) == 'telemt':
+            ssh = None
+            try:
+                pub_host, pub_port = protocol_public_endpoint(server, proto)
+                ssh = await asyncio.to_thread(get_ssh, server)
+                await asyncio.to_thread(ssh.connect)
+                manager = get_protocol_manager(ssh, proto)
+                await asyncio.to_thread(
+                    manager.set_public_endpoint, pub_host, pub_port or record.get('port', '443'))
+            except Exception as e:
+                logger.warning(f"Could not apply the public endpoint to {proto}: {e}")
+                warning = str(e)
+            finally:
+                if ssh is not None:
+                    ssh.disconnect()
+
+        return {'status': 'success', 'protocol': proto,
+                'public_host': host, 'public_port': port, 'warning': warning}
+    except Exception as e:
+        logger.exception("Error setting protocol public endpoint")
         return JSONResponse({'error': str(e)}, status_code=500)
 
 
@@ -4728,13 +5025,14 @@ def api_add_connection(request: Request, server_id: int, req: AddConnectionReque
         server = data['servers'][server_id]
         proto_info = server.get('protocols', {}).get(req.protocol, {})
         port = proto_info.get('port', '55424')
+        pub_host, pub_port = protocol_public_endpoint(server, req.protocol)
         ssh = get_ssh(server)
         ssh.connect()
         manager = get_protocol_manager(ssh, req.protocol)
         
         if protocol_base(req.protocol) == 'telemt':
             result = manager.add_client(
-                req.protocol, req.name, server['host'], port,
+                req.protocol, req.name, pub_host, pub_port or port,
                 telemt_quota=req.telemt_quota,
                 telemt_max_ips=req.telemt_max_ips,
                 telemt_expiry=req.telemt_expiry,
@@ -4744,13 +5042,13 @@ def api_add_connection(request: Request, server_id: int, req: AddConnectionReque
             )
         elif protocol_base(req.protocol) == 'wireguard':
             result = manager.add_client(
-                req.name, server['host'],
+                req.name, pub_host, public_port=pub_port,
                 data_limit_gb=req.data_limit_gb,
                 expiry_date=req.expiry_date
             )
         else:
             result = manager.add_client(
-                req.protocol, req.name, server['host'], port,
+                req.protocol, req.name, pub_host, port, public_port=pub_port,
                 data_limit_gb=req.data_limit_gb,
                 expiry_date=req.expiry_date
             )
@@ -5000,11 +5298,17 @@ def api_get_connection_config(request: Request, server_id: int, req: ConnectionA
         data = load_data()
         if server_id >= len(data['servers']):
             return JSONResponse({'error': 'Server not found'}, status_code=404)
-        # Users can only view their own connections
-        if user['role'] in ('user', 'none'):
+        # Only explicit privileged roles may view unowned connections.
+        if user.get('role') not in ('admin', 'support'):
             owned = any(
                 c for c in data.get('user_connections', [])
-                if c.get('client_id') == req.client_id and c.get('server_id') == server_id and c.get('user_id') == user['id']
+                if c.get('client_id') == req.client_id
+                and c.get('server_id') == server_id
+                and c.get('user_id') == user['id']
+                and c.get('protocol')
+                # Preserve manager aliases such as awg and awg__1.
+                and protocol_base(c['protocol']) == protocol_base(req.protocol)
+                and protocol_instance(c['protocol']) == protocol_instance(req.protocol)
             )
             if not owned:
                 return JSONResponse({'error': 'Forbidden'}, status_code=403)
@@ -5013,10 +5317,11 @@ def api_get_connection_config(request: Request, server_id: int, req: ConnectionA
             return JSONResponse({'error': 'Client ID is required'}, status_code=400)
         proto_info = server.get('protocols', {}).get(req.protocol, {})
         port = proto_info.get('port', '55424')
+        pub_host, pub_port = protocol_public_endpoint(server, req.protocol)
         ssh = get_ssh(server)
         ssh.connect()
         manager = get_protocol_manager(ssh, req.protocol)
-        config = _manager_call(manager, 'get_client_config', req.protocol, req.client_id, server['host'], port)
+        config = _manager_call(manager, 'get_client_config', req.protocol, req.client_id, pub_host, port, public_port=pub_port)
         ssh.disconnect()
         return {'config': config, **config_payloads(config, server, req.protocol)}
     except Exception as e:
@@ -5155,13 +5460,14 @@ def api_add_user(request: Request, req: AddUserRequest):
                 server = data['servers'][req.server_id]
                 proto_info = server.get('protocols', {}).get(req.protocol, {})
                 port = proto_info.get('port', '55424')
+                pub_host, pub_port = protocol_public_endpoint(server, req.protocol)
                 conn_name = req.connection_name or f"{req.username}_vpn"
                 ssh = get_ssh(server)
                 ssh.connect()
                 manager = get_protocol_manager(ssh, req.protocol)
                 if protocol_base(req.protocol) == 'telemt':
                     conn_result = manager.add_client(
-                        req.protocol, conn_name, server['host'], port,
+                        req.protocol, conn_name, pub_host, pub_port or port,
                         telemt_quota=req.telemt_quota,
                         telemt_max_ips=req.telemt_max_ips,
                         telemt_expiry=req.telemt_expiry,
@@ -5170,7 +5476,7 @@ def api_add_user(request: Request, req: AddUserRequest):
                         max_tcp_conns=req.telemt_max_conns
                     )
                 else:
-                    conn_result = manager.add_client(req.protocol, conn_name, server['host'], port)
+                    conn_result = manager.add_client(req.protocol, conn_name, pub_host, port, public_port=pub_port)
                 ssh.disconnect()
 
                 if conn_result.get('client_id'):
@@ -5343,6 +5649,7 @@ async def api_add_user_connection(request: Request, user_id: str, req: AddUserCo
                 return JSONResponse({'error': _t('peer_already_linked', lang).replace('{}', owner_name)}, status_code=400)
         proto_info = server.get('protocols', {}).get(req.protocol, {})
         port = proto_info.get('port', '55424')
+        pub_host, pub_port = protocol_public_endpoint(server, req.protocol)
         ssh = await asyncio.to_thread(get_ssh, server)
         await asyncio.to_thread(ssh.connect)
         manager = get_protocol_manager(ssh, req.protocol)
@@ -5351,13 +5658,13 @@ async def api_add_user_connection(request: Request, user_id: str, req: AddUserCo
             # Use existing client
             target_client_id = req.client_id
             # Retrieve config for existing client
-            config = await asyncio.to_thread(_manager_call, manager, 'get_client_config', req.protocol, req.client_id, server['host'], port)
+            config = await asyncio.to_thread(_manager_call, manager, 'get_client_config', req.protocol, req.client_id, pub_host, port, public_port=pub_port)
             result = {'client_id': target_client_id, 'config': config}
         else:
             # Create new client
             if protocol_base(req.protocol) == 'telemt':
                 result = await asyncio.to_thread(
-                    manager.add_client, req.protocol, req.name, server['host'], port,
+                    manager.add_client, req.protocol, req.name, pub_host, pub_port or port,
                     telemt_quota=req.telemt_quota,
                     telemt_max_ips=req.telemt_max_ips,
                     telemt_expiry=req.telemt_expiry,
@@ -5366,7 +5673,7 @@ async def api_add_user_connection(request: Request, user_id: str, req: AddUserCo
                     max_tcp_conns=req.telemt_max_conns
                 )
             else:
-                result = await asyncio.to_thread(manager.add_client, req.protocol, req.name, server['host'], port)
+                result = await asyncio.to_thread(manager.add_client, req.protocol, req.name, pub_host, port, public_port=pub_port)
         
         await asyncio.to_thread(ssh.disconnect)
 
@@ -5431,7 +5738,19 @@ def api_get_user_connections(request: Request, user_id: str):
     if user['role'] in ('user', 'none') and user['id'] != user_id:
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     data = load_data()
-    conns = [c for c in data.get('user_connections', []) if c['user_id'] == user_id]
+    conns = []
+    for c in data.get('user_connections', []):
+        if c['user_id'] != user_id:
+            continue
+        sid = c.get('server_id', 0)
+        # Skip links to uninstalled instances: the peer is gone with the
+        # container, and every action on such a phantom ends in
+        # 'Client not found'. (Uninstall purges them; this is the belt.)
+        if sid < len(data['servers']):
+            srv = data['servers'][sid]
+            if c.get('protocol') not in (srv.get('protocols') or {}):
+                continue
+        conns.append(c)
     for c in conns:
         sid = c.get('server_id', 0)
         if sid < len(data['servers']):
@@ -5544,6 +5863,10 @@ def api_user_share_setup(user_id: str, req: ShareSetupRequest, request: Request)
     if not user:
         return JSONResponse({'error': 'User not found'}, status_code=404)
     
+    # Revoke signed cookies without changing the public URL. Missing revisions
+    # on existing records start at zero; legacy boolean cookies are rejected.
+    if not req.enabled or req.password is not None:
+        user['share_auth_revision'] = user.get('share_auth_revision', 0) + 1
     user['share_enabled'] = req.enabled
     if not user.get('share_token'):
         user['share_token'] = secrets.token_urlsafe(16)
@@ -5556,6 +5879,14 @@ def api_user_share_setup(user_id: str, req: ShareSetupRequest, request: Request)
     return {'status': 'success', 'share_token': user.get('share_token')}
 
 
+def _share_session_authorized(user, request):
+    if not user.get('share_password_hash'):
+        return True
+    revision = request.session.get(f"share_auth_{user['share_token']}")
+    # bool is an int subclass: require the exact type to reject old True cookies.
+    return type(revision) is int and revision == user.get('share_auth_revision', 0)
+
+
 @app.get('/share/{token}', response_class=HTMLResponse, tags=["System Templates"])
 def share_page(token: str, request: Request):
     data = load_data()
@@ -5564,8 +5895,7 @@ def share_page(token: str, request: Request):
         lang = request.cookies.get('lang', 'ru')
         return HTMLResponse(f"<h1>{_t('share_not_found', lang)}</h1><p>{_t('share_not_found_desc', lang)}</p>", status_code=404)
     
-    auth_session_key = f'share_auth_{token}'
-    need_password = bool(user.get('share_password_hash')) and not request.session.get(auth_session_key)
+    need_password = not _share_session_authorized(user, request)
     
     return tpl(request, 'user_share.html', 
                share_user=user, 
@@ -5581,7 +5911,7 @@ def api_share_auth(token: str, req: ShareAuthRequest, request: Request):
         return JSONResponse({'error': 'Link expired or disabled'}, status_code=404)
     
     if verify_password(req.password, user.get('share_password_hash', '')):
-        request.session[f'share_auth_{token}'] = True
+        request.session[f'share_auth_{token}'] = user.get('share_auth_revision', 0)
         return {'status': 'success'}
     else:
         lang = request.cookies.get('lang', 'ru')
@@ -5595,9 +5925,8 @@ def api_share_connections(token: str, request: Request):
     if not user or not user.get('share_enabled'):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     
-    if user.get('share_password_hash'):
-        if not request.session.get(f'share_auth_{token}'):
-            return JSONResponse({'error': 'Unauthorized'}, status_code=401)
+    if not _share_session_authorized(user, request):
+        return JSONResponse({'error': 'Unauthorized'}, status_code=401)
             
     conns = [dict(c) for c in data.get('user_connections', []) if c['user_id'] == user['id']]
     for c in conns:
@@ -5617,9 +5946,8 @@ def api_share_config(token: str, connection_id: str, request: Request):
     if not user or not user.get('share_enabled'):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     
-    if user.get('share_password_hash'):
-        if not request.session.get(f'share_auth_{token}'):
-            return JSONResponse({'error': 'Unauthorized'}, status_code=401)
+    if not _share_session_authorized(user, request):
+        return JSONResponse({'error': 'Unauthorized'}, status_code=401)
             
     conn = next((c for c in data.get('user_connections', []) if c['id'] == connection_id and c['user_id'] == user['id']), None)
     if not conn:
@@ -5630,11 +5958,12 @@ def api_share_config(token: str, connection_id: str, request: Request):
         server = data['servers'][sid]
         proto_info = server.get('protocols', {}).get(conn['protocol'], {})
         port = proto_info.get('port', '55424')
+        pub_host, pub_port = protocol_public_endpoint(server, conn['protocol'])
         ssh = get_ssh(server)
         ssh.connect()
         # Use appropriate manager for the protocol
         manager = get_protocol_manager(ssh, conn['protocol'])
-        config = _manager_call(manager, 'get_client_config', conn['protocol'], conn['client_id'], server['host'], port)
+        config = _manager_call(manager, 'get_client_config', conn['protocol'], conn['client_id'], pub_host, port, public_port=pub_port)
         ssh.disconnect()
         return {'config': config, **config_payloads(config, server, conn['protocol'])}
     except Exception as e:
@@ -5661,16 +5990,81 @@ def api_my_connection_config(request: Request, connection_id: str):
         server = data['servers'][sid]
         proto_info = server.get('protocols', {}).get(conn['protocol'], {})
         port = proto_info.get('port', '55424')
+        pub_host, pub_port = protocol_public_endpoint(server, conn['protocol'])
         ssh = get_ssh(server)
         ssh.connect()
         # Use appropriate manager for the protocol (fixes Telemt/Xray not working for users)
         manager = get_protocol_manager(ssh, conn['protocol'])
-        config = _manager_call(manager, 'get_client_config', conn['protocol'], conn['client_id'], server['host'], port)
+        config = _manager_call(manager, 'get_client_config', conn['protocol'], conn['client_id'], pub_host, port, public_port=pub_port)
         ssh.disconnect()
         return {'config': config, **config_payloads(config, server, conn['protocol'])}
     except Exception as e:
         logger.exception("Error getting my connection config")
         return JSONResponse({'error': str(e)}, status_code=500)
+
+
+# ======================== EMAIL DELIVERY (admin) ========================
+
+@app.post('/api/settings/mail/test', tags=["Email"])
+async def api_mail_test(request: Request, req: MailTestRequest):
+    """Send a one-liner through the stored SMTP settings to prove they work."""
+    admin = _check_admin(request)
+    if not admin:
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    lang = request.cookies.get('lang', 'en')
+    recipient = (req.recipient or '').strip() or str(admin.get('email') or '').strip()
+    try:
+        return await asyncio.to_thread(mail_svc.send_test, recipient, lang)
+    except MailError as exc:
+        return _mail_error_response(exc, lang)
+    except Exception as exc:
+        logger.exception("Mail: test send failed")
+        return JSONResponse({'error': str(exc)}, status_code=502)
+
+
+@app.post('/api/users/mail/bulk', tags=["Email"])
+def api_mail_send_bulk(request: Request, req: MailBulkRequest):
+    """Start a mass send. Returns immediately with the initial job state --
+    reading a few hundred configs over SSH takes minutes, far longer than a
+    browser waits, so the run continues in a worker thread and the page polls
+    /api/users/mail/bulk/status."""
+    admin = _check_admin(request)
+    if not admin:
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    lang = request.cookies.get('lang', 'en')
+    try:
+        options = MailOptions.from_dict(req.dict())
+        return mail_svc.start_bulk(options, lang=lang, user_ids=req.user_ids,
+                                   started_by=admin.get('username', ''))
+    except MailError as exc:
+        return _mail_error_response(exc, lang)
+    except Exception as exc:
+        logger.exception("Mail: bulk send failed to start")
+        return JSONResponse({'error': str(exc)}, status_code=500)
+
+
+@app.get('/api/users/mail/bulk/status', tags=["Email"])
+def api_mail_bulk_status(request: Request):
+    """Progress of the current (or last) mass send."""
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    return mail_svc.bulk_status()
+
+
+@app.post('/api/users/{user_id}/mail/send', tags=["Email"])
+async def api_mail_send_user(request: Request, user_id: str, req: MailSendRequest):
+    """Email one user their configs and/or proxy links."""
+    if not _check_admin(request):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    lang = request.cookies.get('lang', 'en')
+    try:
+        options = MailOptions.from_dict(req.dict())
+        return await asyncio.to_thread(mail_svc.send_to_user, user_id, options, lang)
+    except MailError as exc:
+        return _mail_error_response(exc, lang)
+    except Exception as exc:
+        logger.exception("Mail: send to user failed")
+        return JSONResponse({'error': str(exc)}, status_code=502)
 
 
 @app.get('/settings', tags=["System Templates"])
@@ -5816,6 +6210,7 @@ def save_settings(request: Request, payload: SaveSettingsRequest):
     settings['captcha'] = payload.captcha.dict()
     settings['telegram'] = payload.telegram.dict()
     settings['ssl'] = payload.ssl.dict()
+    settings['mail'] = merge_mail_settings(settings.get('mail'), payload.mail.dict())
 
     old_auto_backup = settings.get('auto_backup', {}) or {}
     interval_hours = max(1, min(24, int(payload.auto_backup.interval_hours or 24)))
@@ -6031,16 +6426,23 @@ async def api_backup_restore(request: Request, file: UploadFile = File(...)):
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     try:
-        content = await file.read()
+        # Limit the in-memory JSON read; enforce request-body limits at the
+        # reverse proxy too, since multipart parsing happens before this handler.
+        max_backup_bytes = 32 * 1024 * 1024
+        content = await file.read(max_backup_bytes + 1)
+        if len(content) > max_backup_bytes:
+            return JSONResponse({'error': 'Backup exceeds the 32 MiB limit'}, status_code=413)
         if not content:
             return JSONResponse({'error': 'Empty file'}, status_code=400)
         
         try:
             backup_data = json.loads(content)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             return JSONResponse({'error': 'Invalid JSON format'}, status_code=400)
 
         # Basic structure validation
+        if not isinstance(backup_data, dict):
+            return JSONResponse({'error': 'Invalid structure: expected a JSON object'}, status_code=400)
         required_keys = ['servers', 'users']
         missing = [k for k in required_keys if k not in backup_data]
         if missing:

@@ -77,6 +77,7 @@ Configuration panel for system parameters and preferences:
     *   **Add / Edit / Delete / Reorder** server entries — drag-and-drop reorder updates `server_id` references in saved connections automatically.
     *   Every server carries a stable `uid` (assigned on add and backfilled for existing records at startup) for cross-server references that must survive reorder and delete.
     *   **Live ping indicator** next to each server name — non-blocking TCP-connect probe to the SSH port, runs on the asyncio loop in parallel for all servers.
+    *   **Public address per protocol instance**: by default a client dials the same address the panel opens SSH to. When an instance answers somewhere else — a second IP on the box, a port forward, a domain name — set its own **public address** (🌐 on the instance card) and every config, `vless://` and `tg://` link the panel issues points there instead. Telemt prints its own links, so the address is written into its `config.toml` and applied without a restart. The setting belongs to the instance, not to the install: reinstalling the protocol keeps it, and re-issuing a config for an existing client yields the new address with the same keys.
     *   **Clear server** wipes every Amnezia-related container, image and `/opt/amnezia` directory in a single sudo script — works for any current or future `amnezia-*` protocol.
     *   **Reboot** the server directly from the UI.
     *   Strictly concurrent protocol status polling — all supported protocols/services checked in parallel for immediate feedback.
@@ -106,6 +107,13 @@ Configuration panel for system parameters and preferences:
     *   **Remnawave Sync**: Automatically import and sync users from Remnawave.
     *   **Simple Backup**: Effortless JSON-based export and restore of all panel data.
     *   **Backup / Migrate protocols (Alpha)**: Move protocol configurations between nodes for maintenance, recovery, and migration workflows.
+*   **📧 Email Delivery of Configurations**:
+    *   Send one user their configuration files and proxy links straight from their card, or mail every user that has an address in a single run.
+    *   AmneziaWG / WireGuard peers travel as `.conf` attachments plus the `vpn://` key; Xray and Telemt travel as links, since their config *is* the link. Files and links are independent switches — send either or both.
+    *   SMTP is configured in `/settings` (host, port, none/STARTTLS/SSL, credentials, sender name and address, Reply-To, timeout) with a one-click test message. The stored password is never echoed back to the page: leaving the field empty on save keeps it.
+    *   A mass send runs in the background over a single SMTP session and reports progress per user — sent, skipped (no address, disabled, no connections yet) or failed, with the reason next to each name. One unreachable node costs that one connection, not the message and not the run.
+    *   Messages are text plus an HTML alternative dressed in the panel's own appearance (title, logo, colours) — no third-party branding anywhere.
+
 *   **🔗 Public Sharing**:
     *   Generate password-protected links for users to download their configurations without panel access.
 *   **🔐 Self-Service Security**:
@@ -287,6 +295,11 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
 
 # Cheap reachability probe for monitoring
 curl -H "Authorization: Bearer $TOKEN" http://your-panel:5000/api/servers/0/ping
+
+# Publish an instance on another address (empty fields reset it to the server's own)
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"protocol":"telemt","public_host":"203.0.113.9","public_port":"443"}' \
+  http://your-panel:5000/api/servers/0/protocol/public-endpoint
 ```
 
 ### Technology Stack
@@ -301,6 +314,7 @@ curl -H "Authorization: Bearer $TOKEN" http://your-panel:5000/api/servers/0/ping
 web-panel/
 ├── app.py                    # FastAPI entry point + all routes
 ├── telegram_bot.py           # Optional Telegram bot integration
+├── mail_service.py           # SMTP delivery of configs/links (single and bulk)
 ├── managers/                 # Protocol & service managers (one file per protocol)
 │   ├── ssh_manager.py        # SSH abstraction (Paramiko wrapper)
 │   ├── awg_manager.py        # AmneziaWG / AWG 2.0 / AWG Legacy
@@ -324,6 +338,7 @@ web-panel/
 *   **SSH Keys**: Use SSH keys rather than passwords for connecting to your VPN servers.
 *   **Secret Key**: Set a custom `SECRET_KEY` environment variable for secure session management (see [Environment Variables](#-environment-variables)).
 *   **IPv6**: if your servers have global IPv6 but Docker is IPv4-only, leave `AWG_IPV6` at `auto` — the panel probes the container and keeps tunnels IPv4-only rather than blackholing client IPv6. Set `AWG_IPV6=off` to disable dual-stack everywhere.
+*   **SMTP Password**: stored in `data.json` next to the other credentials. Use a mailbox dedicated to the panel (or an app password), not your personal account, and keep `data.json` readable only by the user the panel runs as.
 *   **API Tokens**: Treat each token like a password — store it in your integration's secret manager. Revoke it from `/settings` if it leaks or the integration is decommissioned. Rotate periodically; tokens inherit admin rights.
 
 ## 📱 Progressive Web App (PWA)

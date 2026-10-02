@@ -68,6 +68,11 @@
     .protocol-card.installed-app-visible {
         display: block !important;
     }
+    /* The instance whose peers are listed below: purple frame, so it is
+       visually obvious which card the connections list belongs to */
+    .protocol-card.active {
+        border: 2px solid #7c3aed;
+    }
     /* While the status check runs, hide every protocol tile so the grid
        does not flash the full marketplace list before real data arrives */
     .protocol-cards.apps-pending .protocol-card,
@@ -235,7 +240,7 @@
     <div class="card card-hover protocol-card protocol-awg" id="proto-awg2">
         <div class="protocol-card-head">
             <div class="protocol-icon"><img src="/static/img/amnezia.svg" alt="AmneziaWG"></div>
-            <div class="protocol-name">AmneziaWG 2.0</div>
+            <div class="protocol-name">{{ 'AmneziaWG 3 (amnezia-awg2)' if ((server.get('protocols') or {}).get('awg2') or {}).get('header_protection') else 'AmneziaWG 2.0' }}</div>
         </div>
         <div class="flex gap-sm protocol-ctrl" id="awg2-ctrl" style="display:none!important;"></div>
         <div class="protocol-desc">
@@ -644,6 +649,32 @@
     </div>
 </div>
 
+<!-- Public Endpoint Modal -->
+<div class="modal-backdrop" id="publicEndpointModal">
+    <div class="modal" style="max-width: 460px;">
+        <div class="modal-header">
+            <h2 class="modal-title">🌐 {{ _('public_endpoint_title') }}</h2>
+            <button class="modal-close" onclick="closeModal('publicEndpointModal')">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="text-muted text-sm" style="margin-bottom: var(--space-md);" id="publicEndpointHint"></div>
+            <div class="form-group">
+                <label class="form-label">{{ _('public_endpoint_host') }}</label>
+                <input type="text" class="form-input" id="publicEndpointHost" maxlength="253" placeholder="{{ server.host }}">
+            </div>
+            <div class="form-group">
+                <label class="form-label">{{ _('public_endpoint_port') }}</label>
+                <input type="text" class="form-input" id="publicEndpointPort" maxlength="5" inputmode="numeric" placeholder="{{ _('public_endpoint_port_placeholder') }}">
+            </div>
+            <div class="text-muted text-sm">{{ _('public_endpoint_hint') }}</div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal('publicEndpointModal')">{{ _('cancel') }}</button>
+            <button class="btn btn-primary" onclick="savePublicEndpoint()" id="publicEndpointSaveBtn">{{ _('save') }}</button>
+        </div>
+    </div>
+</div>
+
 <!-- Rename Instance Modal -->
 <div class="modal-backdrop" id="renameProtoModal">
     <div class="modal" style="max-width: 420px;">
@@ -712,7 +743,8 @@
                 <div class="form-row">
                     <div class="form-group">
                         <label class="form-label">{{ _('awg_mtu') }}</label>
-                        <input class="form-input" type="number" id="installAwgMtu" value="1376" min="576" max="65535">
+                        <input class="form-input" type="number" id="installAwgMtu" min="576" max="65535"
+                               placeholder="{{ _('awg_mtu_auto') }}">
                         <div class="form-hint">{{ _('awg_mtu_hint') }}</div>
                     </div>
                     <div class="form-group">
@@ -895,9 +927,11 @@
         <div class="form-row">
             <div class="form-group">
                 <label class="form-label">{{ _('awg_mtu') }}</label>
-                <input class="form-input" type="number" id="awgSetMtu" min="576" max="65535">
+                <input class="form-input" type="number" id="awgSetMtu" min="576" max="65535"
+                       oninput="updateAwgMtuSafeHint()">
                 <div class="form-hint">{{ _('awg_mtu_hint') }}</div>
                 <div class="form-hint hidden" id="awgSetMtuExitHint"></div>
+                <div class="form-hint hidden" id="awgSetMtuSafeHint"></div>
             </div>
             <div class="form-group">
                 <label class="form-label">DNS 1</label>
@@ -1282,11 +1316,27 @@
 <script>
     const SERVER_ID = {{ server_id }};
     let SSH_COOLDOWN_BASE = {{ (server.get('ssh_cooldown_base') or 30) | tojson }};
+    // Live peer-list refresh interval in seconds; 0 = off (opt-in per server).
+    let PEER_POLL_INTERVAL = {{ (server.get('peer_poll_interval') or 0) | tojson }};
+    const PEER_POLL_STEPS = [0, 5, 10, 15, 20, 45, 120, 300, 600];
     document.body.dataset.serverUid = {{ (server.uid or '') | tojson }};
     const SERVER_HOST = "{{ server.host }}";
     const CUSTOM_PROTO_NAMES = {
         {%- for proto, info in (server.get('protocols') or {}).items() if info.get('custom_name') %}
         {{ proto|tojson }}: {{ info.get('custom_name')|tojson }},
+        {%- endfor %}
+    };
+    // AWG 3.x installed by the official Amnezia client lives in amnezia-awg2.
+    const AWG3_IN_AWG2 = {
+        {%- for proto, info in (server.get('protocols') or {}).items() if info.get('header_protection') %}
+        {{ proto|tojson }}: true,
+        {%- endfor %}
+    };
+    // Per-instance public address. Absent = the instance is reached at the
+    // server's own address and its listen port.
+    const PUBLIC_ENDPOINTS = {
+        {%- for proto, info in (server.get('protocols') or {}).items() if info.get('public_host') or info.get('public_port') %}
+        {{ proto|tojson }}: { host: {{ (info.get('public_host') or '')|tojson }}, port: {{ (info.get('public_port') or '')|tojson }} },
         {%- endfor %}
     };
     const MARKETPLACE_APPS = [
@@ -1321,6 +1371,9 @@
     let currentAwgProto = 'awg2';
 
     const AWG_PROTOCOLS = ['awg', 'awg2', 'awg3', 'awg_legacy'];
+    // Protocols that hand out a client config or link, and therefore have an
+    // address a client dials.
+    const ENDPOINT_PROTOCOLS = [...AWG_PROTOCOLS, 'wireguard', 'xray', 'telemt'];
     const SPECIAL_JUNK_KEYS = ['i1', 'i2', 'i3', 'i4', 'i5'];
     // Same value the desktop client ships as its default I1.
     const AWG_DEFAULT_I1 = '<r 2><b 0x858000010001000000000669636c6f756403636f6d0000010001c00c000100010000105a00044d583737>';
@@ -1477,8 +1530,44 @@
                     </div>
                     <div class="text-muted" style="font-size:0.78rem; margin-top:6px;">${_('ssh_cooldown_hint')}</div>
                 </div>
+                <div style="margin-top: var(--space-md); padding-top: var(--space-md); border-top: 1px solid var(--border);">
+                    <label for="peerPollSelect" style="display:block; font-size:0.85rem; margin-bottom:6px;">${_('peer_poll_title')}</label>
+                    <div class="flex" style="gap:8px;">
+                        <select class="form-select" id="peerPollSelect" style="max-width:160px;">
+                            ${PEER_POLL_STEPS.map(s => `<option value="${s}"${s === PEER_POLL_INTERVAL ? ' selected' : ''}>${s === 0 ? _('peer_poll_off') : s + ' ' + _('peer_poll_sec')}</option>`).join('')}
+                        </select>
+                        <button class="btn btn-secondary btn-sm" onclick="savePeerPollInterval()" id="peerPollSaveBtn">💾</button>
+                    </div>
+                    <div class="text-muted" style="font-size:0.78rem; margin-top:6px;">${_('peer_poll_hint')}</div>
+                </div>
             </div>
         `;
+    }
+
+    async function savePeerPollInterval() {
+        const select = document.getElementById('peerPollSelect');
+        const btn = document.getElementById('peerPollSaveBtn');
+        if (!select) return;
+        const seconds = parseInt(select.value, 10);
+        if (!PEER_POLL_STEPS.includes(seconds)) {
+            showToast(_('peer_poll_title') + ': ' + PEER_POLL_STEPS.join('/'), 'error');
+            return;
+        }
+        if (btn) { btn.disabled = true; btn.innerHTML = '<div class="spinner"></div>'; }
+        try {
+            const res = await apiCall(`/api/servers/${SERVER_ID}/peer_poll_interval`, 'POST', { seconds });
+            PEER_POLL_INTERVAL = res.peer_poll_interval;
+            // Reschedule (or stop) the live refresh with the new interval.
+            clearTimeout(window.connPollTimer);
+            if (PEER_POLL_INTERVAL > 0 && document.getElementById('connectionsSection').style.display !== 'none') {
+                window.connPollTimer = setTimeout(function() { loadConnections(true); }, PEER_POLL_INTERVAL * 1000);
+            }
+            showToast('✓', 'success');
+        } catch (err) {
+            showToast(_('error') + ': ' + err.message, 'error');
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = '💾'; }
+        }
     }
 
     async function saveSshCooldown() {
@@ -1595,7 +1684,12 @@
 
         MARKETPLACE_APPS.forEach(app => {
             const card = document.getElementById(`proto-${protoDomKey(app.proto)}`);
-            const installed = baseInstalled(app.proto);
+            // Show the base card only when the BASE instance itself is
+            // installed. Family visibility (any awg2__N installed) used to
+            // keep a deleted base card on screen as "not installed / install"
+            // — a phantom instance right after uninstall. Extra instances
+            // render their own dynamic cards (ensureProtocolCard) below.
+            const installed = isAppInstalled((currentProtocolStatus || {})[app.proto]);
             if (card) {
                 card.classList.toggle('installed-app-hidden', !installed);
                 card.classList.toggle('installed-app-visible', installed);
@@ -1645,7 +1739,7 @@
         let title;
         switch (base) {
             case 'awg': title = 'AmneziaWG'; break;
-            case 'awg2': title = 'AmneziaWG 2.0'; break;
+            case 'awg2': title = AWG3_IN_AWG2[proto] ? 'AmneziaWG 3 (amnezia-awg2)' : 'AmneziaWG 2.0'; break;
             case 'awg3': title = 'AmneziaWG 3.1'; break;
             case 'awg_legacy': title = 'AmneziaWG Legacy'; break;
             case 'xray': title = 'Xray'; break;
@@ -1941,6 +2035,15 @@
     function updateProtocolCard(proto, info) {
         ensureProtocolCard(proto);
         const protoKey = protoDomKey(proto);
+        if (protoBase(proto) === 'awg2' && 'header_protection' in info) {
+            if (info.header_protection) AWG3_IN_AWG2[proto] = true; else delete AWG3_IN_AWG2[proto];
+            const nameEl = document.querySelector(`#proto-${protoKey} .protocol-name`);
+            if (nameEl && !CUSTOM_PROTO_NAMES[proto]) {
+                const pencil = nameEl.querySelector('.proto-rename');
+                nameEl.textContent = getProtoTitle(proto);
+                if (pencil) nameEl.appendChild(pencil);
+            }
+        }
         const statusEl = document.getElementById(`${protoKey}-status`);
         const infoEl = document.getElementById(`${protoKey}-info`);
         const infoGrid = document.getElementById(`${protoKey}-info-grid`);
@@ -2035,9 +2138,14 @@
                     const exitBtn = AWG_PROTOCOLS.includes(protoBase(proto))
                         ? `<button class="btn btn-secondary btn-sm" onclick="openExitLinkModal('${proto}')" title="${_('exit_link_title')}">🚪${info.exit_link ? ' ' + escapeHtml(info.exit_link.exit_name || '') : ''}</button>`
                         : '';
+                    const ep = PUBLIC_ENDPOINTS[proto];
+                    const endpointBtn = ENDPOINT_PROTOCOLS.includes(protoBase(proto))
+                        ? `<button class="btn btn-secondary btn-sm" onclick="openPublicEndpointModal('${proto}')" title="${_('public_endpoint_title')}">🌐${ep ? ' ' + escapeHtml(publicEndpointLabel(ep)) : ''}</button>`
+                        : '';
                     ctrlEl.innerHTML = `
                         ${awgBtn}
                         ${exitBtn}
+                        ${endpointBtn}
                         <button class="btn btn-secondary btn-sm" onclick="showServerConfig('${proto}')" title="${_('server_config')}">${_('config_btn')}</button>
                         <button class="btn btn-danger btn-sm" onclick="toggleContainer('${proto}', true)" title="${_('stop_container_confirm').replace('{}', '')}">${_('stop_btn')}</button>
                     `;
@@ -2231,6 +2339,55 @@
             // a quote would break a server-rendered JS string literal.
             btn.textContent = _('save') || 'Save';
             document.getElementById('renameProtoInput').disabled = false;
+        }
+    }
+
+    // ---------- public endpoint of an instance ----------
+    let publicEndpointTarget = null;
+
+    function publicEndpointLabel(ep) {
+        if (!ep) return '';
+        return ep.port ? `${ep.host || SERVER_HOST}:${ep.port}` : (ep.host || '');
+    }
+
+    function openPublicEndpointModal(proto) {
+        publicEndpointTarget = proto;
+        const ep = PUBLIC_ENDPOINTS[proto] || { host: '', port: '' };
+        document.getElementById('publicEndpointHost').value = ep.host || '';
+        document.getElementById('publicEndpointPort').value = ep.port || '';
+        document.getElementById('publicEndpointHint').textContent =
+            _('public_endpoint_for').replace('{}', getProtoTitle(proto));
+        openModal('publicEndpointModal');
+    }
+
+    async function savePublicEndpoint() {
+        const proto = publicEndpointTarget;
+        if (!proto) return;
+        const host = document.getElementById('publicEndpointHost').value.trim();
+        const port = document.getElementById('publicEndpointPort').value.trim();
+        const btn = document.getElementById('publicEndpointSaveBtn');
+        btn.disabled = true;
+        try {
+            const res = await apiCall(`/api/servers/${SERVER_ID}/protocol/public-endpoint`, 'POST',
+                                      { protocol: proto, public_host: host, public_port: port });
+            if (host || port) {
+                PUBLIC_ENDPOINTS[proto] = { host, port };
+            } else {
+                delete PUBLIC_ENDPOINTS[proto];
+            }
+            closeModal('publicEndpointModal');
+            // The record is saved even when the protocol's own config could not
+            // be updated (server down); say so instead of a bare "saved".
+            if (res && res.warning) {
+                showToast(_('public_endpoint_not_applied') + ': ' + res.warning, 'error');
+            } else {
+                showToast(_('success') || 'Saved', 'success');
+            }
+            checkServer();
+        } catch (err) {
+            showToast((_('error') || 'Error') + ': ' + err.message, 'error');
+        } finally {
+            btn.disabled = false;
         }
     }
 
@@ -2508,7 +2665,10 @@
             awgOpts.style.display = 'block';
             // AWG Legacy predates the special junk packets, only MTU/DNS apply.
             document.getElementById('installAwgJunk').style.display = base === 'awg_legacy' ? 'none' : '';
-            document.getElementById('installAwgMtu').value = '1376';
+            // Left blank on purpose: the backend sizes the MTU against the
+            // obfuscation it is about to generate. 1376 predates
+            // ContentPaddingAddition and overflows a 1500-byte link on 3.x.
+            document.getElementById('installAwgMtu').value = '';
             document.getElementById('installAwgDns1').value = '1.1.1.1';
             document.getElementById('installAwgDns2').value = '1.0.0.1';
             document.getElementById('installAwgDns6').value = '2606:4700:4700::1111';
@@ -2550,6 +2710,7 @@
         logEl.innerHTML = `<div class="log-line info">${_('install_starting')}</div>`;
         fillEl.style.width = '10%';
         fillEl.style.background = '';
+        let progressInterval = null;
         try {
             const progressSteps = [
                 { pct: 20, msg: _('check_docker') },
@@ -2557,7 +2718,7 @@
                 { pct: 50, msg: _('build_container') },
             ];
             let stepIdx = 0;
-            const progressInterval = setInterval(() => {
+            progressInterval = setInterval(() => {
                 if (stepIdx < progressSteps.length) {
                     fillEl.style.width = progressSteps[stepIdx].pct + '%';
                     logEl.innerHTML += `<div class="log-line info">${progressSteps[stepIdx].msg}</div>`;
@@ -2618,9 +2779,15 @@
             document.getElementById('installDone').style.display = '';
             setTimeout(() => checkServer(), 800);
         } catch (err) {
+            clearInterval(progressInterval);
             fillEl.style.width = '100%';
             fillEl.style.background = 'linear-gradient(135deg, #ef4444, #dc2626)';
-            logEl.innerHTML += `<div class="log-line error">✕ ${_('error')}: ${err.message}</div>`;
+            // textContent, not innerHTML: build logs can contain sequences
+            // that parse as HTML and silently swallow the rest of the error.
+            const errDiv = document.createElement('div');
+            errDiv.className = 'log-line error';
+            errDiv.textContent = `✕ ${_('error')}: ${err.message}`;
+            logEl.appendChild(errDiv);
             logEl.scrollTop = logEl.scrollHeight;
             showToast(_('install_error') + err.message, 'error');
             document.getElementById('installDone').style.display = '';
@@ -2824,6 +2991,27 @@
         }
     }
 
+    // Worst-case packet = MTU + IP/UDP/WireGuard headers + per-packet
+    // obfuscation. ContentPaddingAddition is a range, so an oversized tunnel
+    // only drops the packets that draw its upper end: small requests work,
+    // bulk transfers stall. Warn before that is shipped to clients.
+    let awgSafeMtu = 0;
+    let awgTransportOverhead = 0;
+
+    function updateAwgMtuSafeHint() {
+        const hint = document.getElementById('awgSetMtuSafeHint');
+        if (!hint) return;
+        const mtu = Number(document.getElementById('awgSetMtu').value.trim());
+        const unsafe = awgSafeMtu > 0 && mtu > awgSafeMtu;
+        hint.classList.toggle('hidden', !unsafe);
+        if (unsafe) {
+            hint.textContent = _('awg_mtu_unsafe')
+                .replace('{overhead}', awgTransportOverhead)
+                .replace('{safe}', awgSafeMtu);
+            hint.style.color = 'var(--danger, #f87171)';
+        }
+    }
+
     // ========== SOCKS5 Settings ==========
     async function openAwgSettings(proto) {
         currentAwgProto = proto;
@@ -2841,6 +3029,9 @@
                 exitHint.textContent = _('awg_mtu_exit_hint').replace('{exit_mtu}', data.exit_mtu);
                 exitHint.style.color = over ? 'var(--danger, #f87171)' : '';
             }
+            awgSafeMtu = Number(data.safe_mtu || 0);
+            awgTransportOverhead = Number(data.transport_overhead || 0);
+            updateAwgMtuSafeHint();
             const junkGroup = document.getElementById('awgSetJunkGroup');
             junkGroup.style.display = data.supports_special_junk ? '' : 'none';
             SPECIAL_JUNK_KEYS.forEach(key => {
@@ -3150,8 +3341,21 @@
         document.getElementById('connectionsSection').scrollIntoView({ behavior: 'smooth' });
     }
 
+    // Mark the protocol card that owns the connections list below: the
+    // selected instance gets .active (purple frame), so it is visually clear
+    // whose peers are enumerated. Called from loadConnections so polls,
+    // select changes and programmatic switches all stay in sync.
+    function markActiveProtocolCard() {
+        const proto = document.getElementById('connProtoSelect').value;
+        document.querySelectorAll('.protocol-card.active').forEach(c => c.classList.remove('active'));
+        if (!proto) return;
+        const card = document.getElementById(`proto-${protoDomKey(proto)}`);
+        if (card) card.classList.add('active');
+    }
+
     async function loadConnections(isPoll, force) {
         const proto = document.getElementById('connProtoSelect').value;
+        markActiveProtocolCard();
         const loading = document.getElementById('connectionsLoading');
         const emptyEl = document.getElementById('connectionsEmpty');
         const listEl = document.getElementById('connectionsListInner');
@@ -3166,18 +3370,29 @@
         // the editor's own save path, which wants an immediate silent refresh.
         if (isPoll && !force && document.querySelector('#connectionsListInner .rename-editor')) {
             clearTimeout(window.connPollTimer);
-            if (document.getElementById('connectionsSection').style.display !== 'none') {
-                window.connPollTimer = setTimeout(function() { loadConnections(true); }, 5000);
+            if (PEER_POLL_INTERVAL > 0 && document.getElementById('connectionsSection').style.display !== 'none') {
+                window.connPollTimer = setTimeout(function() { loadConnections(true); }, PEER_POLL_INTERVAL * 1000);
             }
             return;
         }
 
-        if (window.connLoading) return; // don't stack overlapping polls
+        // A click while a load is in flight must not be dropped: remember it
+        // and re-run for the CURRENT selector value when the flight ends.
+        // Otherwise the in-flight (older) protocol renders its peers into a
+        // grid already labelled with the newly selected protocol — the
+        // "peers of the neighboring instance" race on laggy links.
+        if (window.connLoading) {
+            window.connPending = true;
+            return;
+        }
         window.connLoading = true;
         if (!isPoll) loading.style.display = ''; // silent refresh on polls
         emptyEl.classList.add('hidden');
         try {
             const data = await apiCall(`/api/servers/${SERVER_ID}/connections?protocol=${proto}`);
+            // Stale response: the user switched protocol while we awaited —
+            // drop it, the pending re-run below will fetch the right one.
+            if (proto !== document.getElementById('connProtoSelect').value) return;
             // The rename editor may have opened while this poll was in flight —
             // re-rendering now would destroy it mid-typing.
             if (isPoll && !force && listEl.querySelector('.rename-editor')) return;
@@ -3315,10 +3530,18 @@
         } finally {
             window.connLoading = false;
             highlightPeerFromQuery();
-            // Auto-refresh every 5s while the connections section is visible (live speed/handshake)
+            // A switch was requested mid-flight: load the currently selected
+            // protocol now (the stale response above was dropped).
+            if (window.connPending) {
+                window.connPending = false;
+                loadConnections();
+                return;
+            }
+            // Live refresh while the connections section is visible; the
+            // interval is opt-in per server (0 = off, management modal).
             clearTimeout(window.connPollTimer);
-            if (document.getElementById('connectionsSection').style.display !== 'none') {
-                window.connPollTimer = setTimeout(function() { loadConnections(true); }, 5000);
+            if (PEER_POLL_INTERVAL > 0 && document.getElementById('connectionsSection').style.display !== 'none') {
+                window.connPollTimer = setTimeout(function() { loadConnections(true); }, PEER_POLL_INTERVAL * 1000);
             }
         }
     }

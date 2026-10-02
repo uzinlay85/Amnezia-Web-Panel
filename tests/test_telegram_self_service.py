@@ -351,7 +351,7 @@ class TestUserAddClientNameInputState(unittest.IsolatedAsyncioTestCase):
         # _handle_pending_input expects the raw message dict (not wrapped in 'message' key)
         msg = {'chat': {'id': 111}, 'from': {'id': 111, 'first_name': 'Test'}, 'text': 'MyPhone'}
         handled = await tg_bot._handle_pending_input(
-            self.api, msg, self.load_data, None, lambda c: 'vpn://x', self.mock_service
+            self.api, msg, self.load_data, None, lambda c, *a: 'vpn://x', self.mock_service
         )
         self.assertTrue(handled)
         self.mock_service.create_user_connection.assert_called_once()
@@ -368,7 +368,7 @@ class TestUserAddClientNameInputState(unittest.IsolatedAsyncioTestCase):
         msg = {'chat': {'id': 222}, 'from': {'id': 222, 'first_name': 'Admin'}, 'text': 'AdminPhone'}
 
         handled = await tg_bot._handle_pending_input(
-            self.api, msg, self.load_data, None, lambda c: 'vpn://x', self.mock_service
+            self.api, msg, self.load_data, None, lambda c, *a: 'vpn://x', self.mock_service
         )
 
         self.assertTrue(handled)
@@ -386,7 +386,7 @@ class TestUserAddClientNameInputState(unittest.IsolatedAsyncioTestCase):
         }
         msg = {'chat': {'id': 999}, 'from': {'id': 999, 'first_name': 'Test'}, 'text': 'MyPhone'}
         handled = await tg_bot._handle_pending_input(
-            self.api, msg, self.load_data, None, lambda c: 'vpn://x', self.mock_service
+            self.api, msg, self.load_data, None, lambda c, *a: 'vpn://x', self.mock_service
         )
         self.assertTrue(handled)
         self.mock_service.create_user_connection.assert_not_called()
@@ -404,7 +404,7 @@ class TestUserAddClientNameInputState(unittest.IsolatedAsyncioTestCase):
         msg = {'chat': {'id': 100, 'type': 'private'}, 'from': {'id': 222, 'first_name': 'Test'}, 'text': 'OtherPhone'}
 
         handled = await tg_bot._handle_pending_input(
-            self.api, msg, self.load_data, None, lambda c: 'vpn://x', self.mock_service
+            self.api, msg, self.load_data, None, lambda c, *a: 'vpn://x', self.mock_service
         )
 
         self.assertFalse(handled)
@@ -629,22 +629,22 @@ def _text_message(chat_id, from_id, text, language_code=None, chat_type='private
 
 
 async def _dispatch_callback(api, update, load_data):
-    generate_vpn_link_fn = lambda c: f'vpn://{c}'
+    generate_vpn_link_fn = lambda c, *a: f'vpn://{c}'
     await tg_bot._dispatch(api, update, load_data, generate_vpn_link_fn, None)
 
 
 async def _dispatch_callback_with_service(api, update, load_data, service):
-    generate_vpn_link_fn = lambda c: f'vpn://{c}'
+    generate_vpn_link_fn = lambda c, *a: f'vpn://{c}'
     await tg_bot._dispatch(api, update, load_data, generate_vpn_link_fn, None, self_service_svc=service)
 
 
 async def _dispatch_message(api, update, load_data):
-    generate_vpn_link_fn = lambda c: f'vpn://{c}'
+    generate_vpn_link_fn = lambda c, *a: f'vpn://{c}'
     await tg_bot._dispatch(api, update, load_data, generate_vpn_link_fn, None)
 
 
 async def _dispatch_message_with_service(api, update, load_data, service):
-    generate_vpn_link_fn = lambda c: f'vpn://{c}'
+    generate_vpn_link_fn = lambda c, *a: f'vpn://{c}'
     await tg_bot._dispatch(api, update, load_data, generate_vpn_link_fn, None, self_service_svc=service)
 
 
