@@ -12,11 +12,38 @@ import json
 import re
 import secrets
 import logging
+import time
+import functools
+import threading
+from managers.clients_table_reader import clients_table_missing
 from base64 import b64encode
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from cryptography.hazmat.primitives import serialization
+from managers.clients_table import save_clients_table
 
 logger = logging.getLogger(__name__)
+
+# clientsTable read-modify-write ops must not overlap: uvicorn runs them in a
+# thread pool, and without serialization the last save wins with a stale
+# snapshot, silently dropping rows added by a concurrent op. The lost row
+# resurfaces as 'External (native app)' (the config stores no names).
+_WG_TABLE_LOCKS = {}
+_WG_TABLE_LOCKS_GUARD = threading.Lock()
+
+
+def _wg_clients_table_lock(host, container_name):
+    with _WG_TABLE_LOCKS_GUARD:
+        return _WG_TABLE_LOCKS.setdefault((host, container_name), threading.Lock())
+
+
+def _serialized_table_write(method):
+    """Hold the per-container table lock for the whole read-modify-write."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        host = getattr(self.ssh, 'host', '') or 'unknown'
+        with _wg_clients_table_lock(host, self.CONTAINER_NAME):
+            return method(self, *args, **kwargs)
+    return wrapper
 
 WG_DEFAULTS = {
     'port': '51820',
@@ -382,24 +409,23 @@ tail -f /dev/null
         out, err, code = self.ssh.run_sudo_command(
             f"docker exec -i {self.CONTAINER_NAME} cat {self.CLIENTS_TABLE_PATH} 2>/dev/null"
         )
-        if code != 0 or not out.strip():
-            return []
+        if code != 0:
+            if clients_table_missing(self.ssh, self.CONTAINER_NAME, self.CLIENTS_TABLE_PATH):
+                return []
+            raise RuntimeError('WireGuard clientsTable could not be read')
+        if not out.strip():
+            raise RuntimeError('WireGuard clientsTable is empty (expected JSON array)')
         try:
             data = json.loads(out)
             if isinstance(data, list):
                 return data
-            return []
+            raise RuntimeError('WireGuard clientsTable must be a JSON array')
         except json.JSONDecodeError:
-            return []
+            raise RuntimeError('WireGuard clientsTable is not valid JSON') from None
 
     def _save_clients_table(self, clients_table):
         """Save the clients table to the server."""
-        content = json.dumps(clients_table, indent=2)
-        self.ssh.upload_file(content, "/tmp/_wg_clients.json")
-        self.ssh.run_sudo_command(
-            f"docker cp /tmp/_wg_clients.json {self.CONTAINER_NAME}:{self.CLIENTS_TABLE_PATH}"
-        )
-        self.ssh.run_command("rm -f /tmp/_wg_clients.json")
+        save_clients_table(self.ssh, self.CONTAINER_NAME, self.CLIENTS_TABLE_PATH, clients_table)
 
         # Keep per-peer bandwidth limits in sync (best effort)
         try:
@@ -454,6 +480,7 @@ tail -f /dev/null
         )
         self.ssh.run_command("rm -f /tmp/_wg_tc.sh")
 
+    @_serialized_table_write
     def set_speed_limit(self, client_id, max_speed):
         """Set per-peer bandwidth limit in Mbit/s (0 = unlimited).
 
@@ -556,26 +583,7 @@ tail -f /dev/null
         to someone else. Raises if the table cannot be read at all — silently
         treating the reservation pool as empty would break that guarantee.
         """
-        out, err, code = self.ssh.run_sudo_command(
-            f"docker exec -i {self.CONTAINER_NAME} cat {self.CLIENTS_TABLE_PATH} 2>/dev/null"
-        )
-        if code != 0:
-            # cat fails both when docker exec is broken and when the file
-            # simply does not exist yet (fresh instance). Fail loudly only
-            # for the former; an absent table means no reservations.
-            _, terr, tcode = self.ssh.run_sudo_command(
-                f"docker exec -i {self.CONTAINER_NAME} true")
-            if tcode != 0:
-                raise RuntimeError(
-                    f"Cannot read clients table from {self.CONTAINER_NAME}: {terr.strip() or err.strip()}")
-            return set()
-        if not out.strip():
-            return set()
-        try:
-            data = json.loads(out)
-        except json.JSONDecodeError:
-            raise RuntimeError(
-                f"Clients table in {self.CONTAINER_NAME} is not valid JSON")
+        data = self._get_clients_table()
         reserved = set()
         for c in (data if isinstance(data, list) else []):
             ud = c.get('userData') or {}
@@ -793,6 +801,7 @@ tail -f /dev/null
 
         return clients_table
 
+    @_serialized_table_write
     def add_client(self, client_name, server_host, public_port=None, data_limit_gb=None, expiry_date=None, **kwargs):
         """
         Add a new client/peer to the WireGuard config.
@@ -921,6 +930,7 @@ PersistentKeepalive = 25
 """
         return config
 
+    @_serialized_table_write
     def toggle_client(self, client_id, enable):
         """Enable or disable a client by adding/removing their [Peer] from server config."""
         if enable:
@@ -992,6 +1002,7 @@ AllowedIPs = {client_ip}/32
                 break
         self._save_clients_table(clients_table)
 
+    @_serialized_table_write
     def remove_client(self, client_id):
         """Remove a client from WireGuard config."""
         config = self._get_server_config()
@@ -1041,6 +1052,7 @@ AllowedIPs = {client_ip}/32
             dns1 = '172.29.172.254'
         return f"{dns1}, {dns2}"
 
+    @_serialized_table_write
     def save_client_config(self, client_id, config_text):
         """Persist a manually edited client config in clientsTable
         (userData.customConfig + userData.dns override)."""
@@ -1062,6 +1074,7 @@ AllowedIPs = {client_ip}/32
         self._save_clients_table(clients_table)
         return {'status': 'success'}
 
+    @_serialized_table_write
     def rename_client(self, client_id, new_name):
         """Rename a client. The name lives only in the clientsTable
         (userData.clientName); keys, IPs and the WireGuard config itself

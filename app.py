@@ -7,6 +7,7 @@ import hashlib
 import secrets
 import uuid
 import asyncio
+import math
 import platform
 import re
 import shutil
@@ -125,7 +126,6 @@ async def custom_redoc():
         redoc_js_url="/static/vendor/redoc/redoc.standalone.js",
         with_google_fonts=False,
     )
-app.add_middleware(SessionMiddleware, secret_key=os.environ.get('SECRET_KEY', secrets.token_hex(32)))
 
 
 @app.middleware("http")
@@ -148,7 +148,28 @@ async def robots_txt():
     robots.txt is only a hint and gets ignored by some bots)."""
     return PlainTextResponse("User-agent: *\nDisallow: /\n")
 
-# Mount static files & templates
+DOCS_PATHS = ('/docs', '/redoc', '/openapi.json')
+
+
+@app.middleware("http")
+async def docs_auth_middleware(request, call_next):
+    """Serve the API schema only to authenticated admins.
+
+    The OpenAPI document is a ready-made map of every endpoint and
+    parameter of the panel; leaving it open to anonymous visitors hands
+    scanners the feature list for free. Session cookie or admin Bearer
+    token both count.
+    """
+    if request.url.path in DOCS_PATHS and not _check_admin(request):
+        if request.url.path == '/openapi.json':
+            return JSONResponse({'error': 'Forbidden'}, status_code=403)
+        return RedirectResponse('/login')
+    return await call_next(request)
+
+# Sessions must wrap every other middleware: docs_auth_middleware above
+# reads request.session, so SessionMiddleware has to sit outside it.
+app.add_middleware(SessionMiddleware, secret_key=os.environ.get('SECRET_KEY', secrets.token_hex(32)))
+
 class CachedStaticFiles(StaticFiles):
     """Static assets that carry ?v=<static mtime> (see static_version()) change
     their URL on every redeploy, so they can be cached for 180 days. Assets
@@ -180,7 +201,7 @@ else:
 DATA_FILE = os.path.abspath(os.path.expanduser(
     os.environ.get('DATA_FILE') or os.path.join(application_path, 'data.json')
 ))
-CURRENT_VERSION = "v1.7.4"
+CURRENT_VERSION = "v1.7.7"
 
 # Custom protocol instance names: the rename modal caps input at 64 chars.
 CUSTOM_PROTOCOL_NAME_MAX = 64
@@ -2335,6 +2356,14 @@ class RenameConnectionRequest(BaseModel):
     new_name: str = ''
     max_speed: float = -1  # Mbit/s; -1 = don't touch, 0 = unlimited
 
+
+class ConnectionSpeedRequest(BaseModel):
+    protocol: str = Field(default='awg', min_length=1, max_length=64)
+    client_id: str = Field(min_length=1, max_length=256)
+    # Validate numeric bounds in the handler so non-standard JSON NaN/Infinity
+    # also receive a JSON error without serializing the invalid number back.
+    max_speed: float = Field(strict=True, description='Finite Mbit/s, 0..1000000 in steps of 0.1; 0 = unlimited')
+
 class SaveConnectionConfigRequest(BaseModel):
     protocol: str = 'awg'
     client_id: str = ''
@@ -2467,7 +2496,7 @@ class UpdateUserRequest(BaseModel):
     telegramId: Optional[str] = None
     email: Optional[str] = None
     description: Optional[str] = None
-    traffic_limit: Optional[float] = 0
+    traffic_limit: Optional[float] = None
     traffic_reset_strategy: Optional[str] = None
     expiration_date: Optional[str] = None
     password: Optional[str] = None
@@ -3478,6 +3507,16 @@ def api_server_stats(request: Request, server_id: int):
             stats['net_rx'] = stats['net_tx'] = 0
         out, _, _ = ssh.run_command("uptime -p 2>/dev/null || uptime")
         stats['uptime'] = out.strip()
+        # Global IPv6 addresses for the page header. Some providers mark ULA
+        # (fd00::/8) addresses as scope global, so filter them out explicitly.
+        # Small point-to-point transit prefixes (/126 etc. between the box and
+        # the provider's router) are infrastructure, not a public address.
+        out, _, _ = ssh.run_command(
+            "ip -6 addr show scope global 2>/dev/null | "
+            "awk '/inet6/ && $2 !~ /^fd[0-9a-fA-F]{2}:/ {"
+            "split($2, a, \"/\"); if (a[2] <= 64) print a[1]}'"
+        )
+        stats['ipv6'] = [a for a in (line.strip() for line in out.splitlines()) if a]
         ssh.disconnect()
         return stats
     except Exception as e:
@@ -5251,12 +5290,13 @@ def api_clear_conn_warnings(request: Request, server_id: int, req: ConnectionAct
 
 
 @app.post('/api/servers/{server_id}/connections/rename', tags=["Connections"])
-def api_rename_connection(request: Request, server_id: int, req: RenameConnectionRequest):
+async def api_rename_connection(request: Request, server_id: int, req: RenameConnectionRequest):
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     try:
-        data = load_data()
-        if server_id >= len(data['servers']):
+        async with DATA_LOCK:
+            data = load_data()
+        if server_id < 0 or server_id >= len(data['servers']):
             return JSONResponse({'error': 'Server not found'}, status_code=404)
         server = data['servers'][server_id]
         new_name = (req.new_name or '').strip()
@@ -5264,30 +5304,45 @@ def api_rename_connection(request: Request, server_id: int, req: RenameConnectio
             return JSONResponse({'error': 'New name is required'}, status_code=400)
         if not req.client_id:
             return JSONResponse({'error': 'Client ID is required'}, status_code=400)
-        ssh = get_ssh(server)
-        ssh.connect()
-        manager = get_protocol_manager(ssh, req.protocol)
-        result = _manager_call(manager, 'rename_client', req.protocol, req.client_id, new_name) or {}
-        # Optional per-peer bandwidth limit (managers exposing set_speed_limit)
-        speed_warning = None
-        if req.max_speed >= 0 and hasattr(manager, 'set_speed_limit'):
+        connection_ids = {
+            conn['id'] for conn in data.get('user_connections', [])
+            if conn.get('id') and conn.get('client_id') == req.client_id
+            and conn.get('server_id') == server_id and conn.get('protocol') == req.protocol
+        }
+
+        def rename_peer():
+            ssh = get_ssh(server)
             try:
-                _manager_call(manager, 'set_speed_limit', req.protocol, req.client_id, req.max_speed)
-            except Exception as se:
-                logger.warning(f"set_speed_limit failed: {se}")
-                speed_warning = str(se)
-        ssh.disconnect()
+                ssh.connect()
+                manager = get_protocol_manager(ssh, req.protocol)
+                result = _manager_call(manager, 'rename_client', req.protocol, req.client_id, new_name) or {}
+                speed_warning = None
+                if req.max_speed >= 0 and hasattr(manager, 'set_speed_limit'):
+                    try:
+                        _manager_call(manager, 'set_speed_limit', req.protocol, req.client_id, req.max_speed)
+                    except Exception as se:
+                        logger.warning(f"set_speed_limit failed: {se}")
+                        speed_warning = str(se)
+                return result, speed_warning
+            finally:
+                ssh.disconnect()
+
+        # Blocking SSH stays outside DATA_LOCK and off the event loop.
+        result, speed_warning = await asyncio.to_thread(rename_peer)
         # Telemt rename may also change client_id (username is the identity there)
         new_client_id = result.get('client_id', req.client_id)
         stored_name = result.get('name', new_name)
-        changed = False
-        for conn in data.get('user_connections', []):
-            if conn.get('client_id') == req.client_id and conn.get('server_id') == server_id and conn.get('protocol') == req.protocol:
-                conn['name'] = stored_name
-                conn['client_id'] = new_client_id
-                changed = True
-        if changed:
-            save_data(data)
+        async with DATA_LOCK:
+            current = load_data()
+            changed = False
+            for conn in current.get('user_connections', []):
+                if (conn.get('id') in connection_ids and conn.get('client_id') == req.client_id
+                        and conn.get('server_id') == server_id and conn.get('protocol') == req.protocol):
+                    conn['name'] = stored_name
+                    conn['client_id'] = new_client_id
+                    changed = True
+            if changed:
+                save_data(current)
         resp = {'status': 'success', 'name': stored_name, 'client_id': new_client_id}
         if speed_warning:
             resp['speed_warning'] = speed_warning
@@ -5295,6 +5350,51 @@ def api_rename_connection(request: Request, server_id: int, req: RenameConnectio
     except Exception as e:
         logger.exception("Error renaming connection")
         return JSONResponse({'error': str(e)}, status_code=500)
+
+
+@app.post('/api/servers/{server_id}/connections/speed', tags=["Connections"])
+async def api_set_connection_speed(request: Request, server_id: int, req: ConnectionSpeedRequest):
+    actor = _check_admin(request)
+    if not actor or actor.get('role') != 'admin':
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
+    if (not math.isfinite(req.max_speed) or not 0 <= req.max_speed <= 1000000
+            or round(req.max_speed, 1) != req.max_speed):
+        return JSONResponse({'error': 'max_speed must be finite, 0..1000000 Mbit/s, in steps of 0.1'}, status_code=400)
+    data = load_data()
+    if server_id < 0 or server_id >= len(data['servers']):
+        return JSONResponse({'error': 'Server not found'}, status_code=404)
+    server = data['servers'][server_id]
+    if req.protocol not in (server.get('protocols') or {}):
+        return JSONResponse({'error': 'Protocol not installed'}, status_code=404)
+
+    def set_peer_speed():
+        ssh = get_ssh(server)
+        try:
+            ssh.connect()
+            manager = get_protocol_manager(ssh, req.protocol)
+            if not callable(getattr(manager, 'set_speed_limit', None)):
+                return JSONResponse({'error': 'Speed limits are not supported by this protocol'}, status_code=501)
+            clients = _manager_call(manager, 'get_clients', req.protocol)
+            if not any(c.get('clientId') == req.client_id for c in clients):
+                return JSONResponse({'error': 'Client not found'}, status_code=404)
+            result = _manager_call(manager, 'set_speed_limit', req.protocol, req.client_id, req.max_speed)
+            if not isinstance(result, dict) or result.get('status') != 'success' or result.get('speed_warning'):
+                raise RuntimeError('Speed limit application was not confirmed')
+            clients = _manager_call(manager, 'get_clients', req.protocol)
+            peer = next((c for c in clients if c.get('clientId') == req.client_id), None)
+            if peer is None or float((peer.get('userData') or {}).get('maxSpeed') or 0) != req.max_speed:
+                raise RuntimeError('Speed limit read-back mismatch')
+            return {'status': 'success', 'server_id': server_id, 'protocol': req.protocol,
+                    'client_id': req.client_id, 'max_speed': req.max_speed}
+        finally:
+            ssh.disconnect()
+
+    try:
+        # No rename, local JSON write, or DATA_LOCK held across SSH.
+        return await asyncio.to_thread(set_peer_speed)
+    except Exception:
+        logger.exception('Error applying connection speed limit')
+        return JSONResponse({'error': 'Speed limit could not be applied or verified'}, status_code=502)
 
 
 @app.post('/api/servers/{server_id}/connections/config/save', tags=["Connections"])
@@ -5540,48 +5640,57 @@ async def api_update_user(request: Request, user_id: str, req: UpdateUserRequest
     if not _check_admin(request):
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     try:
-        data = load_data()
-        user = next((u for u in data['users'] if u['id'] == user_id), None)
-        if not user:
-            return JSONResponse({'error': 'User not found'}, status_code=404)
-            
-        if req.username is not None:
-            new_name = req.username.strip()
-            lang = request.cookies.get('lang', 'ru')
-            if not new_name:
-                return JSONResponse({'error': _t('username_empty', lang)}, status_code=400)
-            if any(u['username'] == new_name and u['id'] != user_id for u in data.get('users', [])):
-                return JSONResponse({'error': _t('user_exists', lang)}, status_code=400)
-            user['username'] = new_name
-        if req.telegramId is not None:
-            try:
-                user['telegramId'] = _normalize_telegram_id(req.telegramId)
-            except ValueError as exc:
-                return JSONResponse({'error': str(exc)}, status_code=400)
-        if req.email is not None: user['email'] = req.email
-        if req.description is not None: user['description'] = req.description
-        if req.traffic_limit is not None: 
-            new_limit = int(req.traffic_limit * 1024**3)
-            user['traffic_limit'] = new_limit
-        
-        if req.traffic_reset_strategy is not None:
-            user['traffic_reset_strategy'] = req.traffic_reset_strategy
-            user['last_reset_at'] = datetime.now().isoformat()
-            
-        req_fields = getattr(req, 'model_fields_set', getattr(req, '__fields_set__', set()))
-        if 'expiration_date' in req_fields:
-            user['expiration_date'] = req.expiration_date or None
+        async with DATA_LOCK:
+            data = load_data()
+            user = next((u for u in data['users'] if u['id'] == user_id), None)
+            if not user:
+                return JSONResponse({'error': 'User not found'}, status_code=404)
 
-        if req.password:
-            user['password_hash'] = hash_password(req.password)
-            
-        save_data(data)
-        
-        # Auto re-enable if traffic limit increased beyond usage
-        if req.traffic_limit is not None:
-            if new_limit > 0 and user.get('traffic_used', 0) < new_limit and not user.get('enabled', True):
-                await perform_toggle_user(data, user_id, True)
-                save_data(data)
+            if req.username is not None:
+                new_name = req.username.strip()
+                lang = request.cookies.get('lang', 'ru')
+                if not new_name:
+                    return JSONResponse({'error': _t('username_empty', lang)}, status_code=400)
+                if any(u['username'] == new_name and u['id'] != user_id for u in data.get('users', [])):
+                    return JSONResponse({'error': _t('user_exists', lang)}, status_code=400)
+                user['username'] = new_name
+            if req.telegramId is not None:
+                try:
+                    user['telegramId'] = _normalize_telegram_id(req.telegramId)
+                except ValueError as exc:
+                    return JSONResponse({'error': str(exc)}, status_code=400)
+            if req.email is not None: user['email'] = req.email
+            if req.description is not None: user['description'] = req.description
+            if req.traffic_limit is not None:
+                new_limit = int(req.traffic_limit * 1024**3)
+                user['traffic_limit'] = new_limit
+
+            if req.traffic_reset_strategy is not None:
+                user['traffic_reset_strategy'] = req.traffic_reset_strategy
+                user['last_reset_at'] = datetime.now().isoformat()
+
+            req_fields = getattr(req, 'model_fields_set', getattr(req, '__fields_set__', set()))
+            if 'expiration_date' in req_fields:
+                user['expiration_date'] = req.expiration_date or None
+
+            if req.password:
+                user['password_hash'] = hash_password(req.password)
+
+            # Persist the complete local intent before SSH can yield. Never write
+            # this snapshot again after SSH: traffic accounting and other requests
+            # may have saved newer fields while the network operation was pending.
+            auto_reenable = (
+                req.traffic_limit is not None
+                and new_limit > 0
+                and user.get('traffic_used', 0) < new_limit
+                and not user.get('enabled', True)
+            )
+            if auto_reenable:
+                user['enabled'] = True
+            save_data(data)
+
+        if auto_reenable:
+            await perform_toggle_user(data, user_id, True)
 
         return {'status': 'success'}
     except Exception as e:
@@ -5615,11 +5724,16 @@ async def api_toggle_user(request: Request, user_id: str, req: ToggleUserRequest
     if not cur or cur['role'] != 'admin':
         return JSONResponse({'error': 'Forbidden'}, status_code=403)
     try:
-        data = load_data()
-        success = await perform_toggle_user(data, user_id, req.enabled)
-        if not success:
-            return JSONResponse({'error': 'User not found'}, status_code=404)
-        save_data(data)
+        async with DATA_LOCK:
+            data = load_data()
+            user = next((u for u in data['users'] if u['id'] == user_id), None)
+            if not user:
+                return JSONResponse({'error': 'User not found'}, status_code=404)
+            user['enabled'] = req.enabled
+            save_data(data)
+        # SSH only propagates the committed intent; it must not save an old
+        # full-data snapshot when it completes.
+        await perform_toggle_user(data, user_id, req.enabled)
         return {'status': 'success', 'enabled': req.enabled}
     except Exception as e:
         logger.exception("Error toggling user")

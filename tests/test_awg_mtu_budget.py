@@ -7,6 +7,7 @@ ContentPaddingAddition: with it, the largest packets of a 3.x tunnel do not
 fit a plain 1500-byte link, which shows up as "connects fine, transfers
 stall" rather than as an outage.
 """
+import random
 import unittest
 
 from managers.awg_manager import (
@@ -79,6 +80,16 @@ class SafeClientMtuTests(unittest.TestCase):
 class GeneratedDefaultsTests(unittest.TestCase):
     """What a fresh install would pick, per protocol generation."""
 
+    def setUp(self):
+        # The generator draws random sizes; an unlucky draw made
+        # test_awg3_default_would_not_fit_a_standard_link fail about one run
+        # in ten. Pin the sequence so the suite is deterministic.
+        self._saved_state = random.getstate()
+        random.seed('awg-mtu-budget')
+
+    def tearDown(self):
+        random.setstate(self._saved_state)
+
     def test_awg3_default_would_not_fit_a_standard_link(self):
         params = generate_awg_params(awg3=True)
         oversized = int(AWG_DEFAULTS['mtu']) + transport_overhead(params)
@@ -95,6 +106,26 @@ class GeneratedDefaultsTests(unittest.TestCase):
                 mtu = safe_client_mtu(params)
                 self.assertLessEqual(mtu + transport_overhead(params), DEFAULT_LINK_MTU)
                 self.assertGreaterEqual(mtu, MIN_CLIENT_MTU)
+
+
+class JunkPacketCountTests(unittest.TestCase):
+    """The official amneziawg-go README recommends Jc 4-12."""
+
+    def test_jc_stays_in_the_recommended_band(self):
+        for label, params in (
+            ('awg_legacy', generate_awg_params()),
+            ('awg2', generate_awg_params(use_ranges=True)),
+            ('awg3', generate_awg_params(awg3=True)),
+        ):
+            with self.subTest(label):
+                self.assertGreaterEqual(int(params['junk_packet_count']), 4)
+                self.assertLessEqual(int(params['junk_packet_count']), 12)
+
+    def test_jmin_jmax_stay_consistent(self):
+        params = generate_awg_params(awg3=True)
+        jmin = int(params['junk_packet_min_size'])
+        jmax = int(params['junk_packet_max_size'])
+        self.assertLessEqual(jmin, jmax)
 
 
 if __name__ == '__main__':

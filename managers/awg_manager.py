@@ -17,9 +17,13 @@ import ipaddress
 import logging
 import re
 import time
+import functools
+import threading
+from managers.clients_table_reader import clients_table_missing
 from base64 import b64encode, b64decode
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from cryptography.hazmat.primitives import serialization
+from managers.clients_table import save_clients_table
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +60,39 @@ AWG_DEFAULTS = {
     'transport_packet_magic_header': '2528465083',
     'underload_packet_magic_header': '1766607858',
 }
+
+def parse_subnet_indexes(address_lines):
+    """Subnet indexes (N in 10.8.N.x / fd42:8:N::) already used on a host.
+
+    `address_lines` are Address lines ("Address = ..." or a bare value) from
+    the server configs of all awg/wireguard containers on the host. Both the
+    IPv4 and the IPv6 form encode the same index, so either is enough to
+    mark N as taken.
+    """
+    used = set()
+    for line in address_lines:
+        line = line.strip()
+        if line.lower().startswith('address'):
+            _, _, line = line.partition('=')
+        for part in line.split(','):
+            addr = part.strip().split('/')[0].strip()
+            if not addr:
+                continue
+            m = re.match(r'^10\.8\.(\d+)\.\d+$', addr)
+            if not m:
+                m = re.match(r'^fd42:8:([0-9a-f]+)::', addr)
+            if m:
+                used.add(int(m.group(1), 16))
+    return used
+
+
+def first_free_subnet_index(used):
+    """Smallest subnet index >= 1 not present in `used`."""
+    n = 1
+    while n in used:
+        n += 1
+    return n
+
 
 # AWG 3.1 parameters: (internal key, config key).
 # HeaderProtectionKey/ContentPaddingAddition and the timings came with 3.0,
@@ -255,6 +292,46 @@ def normalize_special_junk(values):
 CONN_WARN_THRESHOLD = 900    # simultaneous connections per peer that trigger a warning
 CONN_WARN_COOLDOWN = 3600    # min seconds between two recorded warnings for the same peer
 CONN_WARN_MAX_EVENTS = 5     # how many recent warnings are kept per peer
+# Conntrack entries outlive the VPN session by hours/days (TCP ESTABLISHED
+# timeout), so a peer that disconnected keeps "owning" its old flows in the
+# table. Counts are only trusted for peers whose handshake is fresh.
+CONN_LIVE_HANDSHAKE_SECONDS = 300
+
+
+# ----- clientsTable mutation serialization -----
+# Every mutating op does read-table -> modify -> save-table. Uvicorn serves
+# requests concurrently (blocking manager calls run in a thread pool), and
+# the prefetched batch cache can hand out a table snapshot taken seconds
+# earlier. Two overlapping ops then overwrite each other: the last save
+# wins with a stale snapshot, silently dropping rows added by the other op.
+# A dropped row resurfaces as a synthesized 'External (native app)' entry
+# (the config carries no names), which is how peer names were lost. The
+# lock is keyed by server host + container so unrelated servers/instances
+# never block each other.
+_TABLE_LOCKS = {}
+_TABLE_LOCKS_GUARD = threading.Lock()
+_TABLE_WRITE_STATE = threading.local()
+
+
+def _clients_table_lock(host, container_name):
+    with _TABLE_LOCKS_GUARD:
+        return _TABLE_LOCKS.setdefault((host, container_name), threading.Lock())
+
+
+def _serialized_table_write(method):
+    """Hold the per-container table lock for the whole read-modify-write."""
+    @functools.wraps(method)
+    def wrapper(self, protocol_type, *args, **kwargs):
+        host = getattr(self.ssh, 'host', '') or 'unknown'
+        container = self._container_name(protocol_type)
+        with _clients_table_lock(host, container):
+            previous = getattr(_TABLE_WRITE_STATE, 'target', None)
+            _TABLE_WRITE_STATE.target = (host, container)
+            try:
+                return method(self, protocol_type, *args, **kwargs)
+            finally:
+                _TABLE_WRITE_STATE.target = previous
+    return wrapper
 
 
 def generate_wg_keypair():
@@ -328,7 +405,10 @@ def generate_awg_params(use_ranges=False, awg3=False):
     """
     import random
 
-    jc = random.randint(1, 10)
+    # Official amneziawg-go README: "Jc: int, recommended range is 4-12".
+    # The native AmneziaVPN installer picks 4-6; stay within the documented
+    # band so fresh instances do not fall below the recommended floor.
+    jc = random.randint(4, 12)
     jmin = random.randint(5, 20)
     jmax = random.randint(jmin + 10, jmin + 50)
     # AWG 3.1 enables header protection, which puts a floor under the junk sizes.
@@ -531,6 +611,31 @@ class AWGManager:
     def _clients_table_path(self):
         """Path to the clients table file inside container."""
         return '/opt/amnezia/awg/clientsTable'
+
+    def _used_subnet_indexes(self):
+        """Subnet indexes (N of 10.8.N.0/24) taken by the other awg/wireguard
+        containers on this host. Best effort: on any SSH failure returns an
+        empty set, which falls back to the default subnet (index 1)."""
+        cmd = (
+            "for c in $(docker ps -a --format '{{.Names}}' "
+            "| grep -E '^amnezia-(awg|wireguard)'); do "
+            "docker exec \"$c\" sh -c "
+            "'grep -h -m1 \"^Address\" "
+            "/opt/amnezia/awg/awg0.conf /opt/amnezia/awg/wg0.conf "
+            "/opt/amnezia/wireguard/wg0.conf 2>/dev/null' 2>/dev/null; "
+            "done"
+        )
+        out, _, code = self.ssh.run_sudo_command(cmd, timeout=60)
+        if code != 0 or not out:
+            return set()
+        return parse_subnet_indexes(out.splitlines())
+
+    def _config_exists(self, protocol_type):
+        container_name = self._container_name(protocol_type)
+        config_path = self._config_path(protocol_type)
+        _, _, code = self.ssh.run_sudo_command(
+            f"docker exec -i {container_name} test -f {config_path}")
+        return code == 0
 
     def _get_subnet_ip(self, protocol_type):
         """Get the subnet IP (gateway) from server config, or fallback to default."""
@@ -1342,6 +1447,20 @@ done
 
         subnet_ip = self._get_subnet_ip(protocol_type)
         subnet_cidr = self._get_subnet_cidr(protocol_type)
+        ipv6_gateway = AWG_DEFAULTS['subnet_ipv6_ip']
+        if not self._config_exists(protocol_type):
+            # Fresh install (no server config yet): every instance would
+            # otherwise fall back to the same default 10.8.1.0/24 and start
+            # handing out client IPs that another instance on this host
+            # already gave out. Pick a subnet index no other awg/wireguard
+            # container uses, for IPv6 as well (fd42:8:N::/64).
+            try:
+                subnet_index = first_free_subnet_index(self._used_subnet_indexes())
+            except Exception:
+                subnet_index = 1
+            subnet_ip = f"10.8.{subnet_index}.1"
+            subnet_cidr = AWG_DEFAULTS['subnet_cidr']
+            ipv6_gateway = f"fd42:8:{subnet_index}::1"
 
         # AWG 3.1 parameters are written only when the protocol asks for them,
         # so awg/awg2 installations keep byte-identical configs.
@@ -1372,7 +1491,7 @@ done
 
         address_line = f"{subnet_ip}/{subnet_cidr}"
         if ipv6:
-            address_line += f", {AWG_DEFAULTS['subnet_ipv6_ip']}/{AWG_DEFAULTS['subnet_ipv6_cidr']}"     
+            address_line += f", {ipv6_gateway}/{AWG_DEFAULTS['subnet_ipv6_cidr']}"     
         
         # Build the server config generation script
         if self._base_protocol(protocol_type) in (self.AWG, self.AWG2, self.AWG3):
@@ -2038,7 +2157,10 @@ x_exit_sync() {
     def _get_clients_table(self, protocol_type):
         """Get the clients table from the server."""
         container_name = self._container_name(protocol_type)
-        batch = self._batch_entry(container_name)
+        host = getattr(self.ssh, 'host', '') or 'unknown'
+        writing = getattr(_TABLE_WRITE_STATE, 'target', None) == (host, container_name)
+        # Poll snapshots are not authoritative input for a read-modify-write.
+        batch = None if writing else self._batch_entry(container_name)
         if batch is not None:
             out = batch['clients']
         else:
@@ -2051,6 +2173,8 @@ x_exit_sync() {
             except Exception:
                 st = None
             if st and st[0] and not st[1]:
+                if writing:
+                    raise RuntimeError(f"Cannot update clientsTable in stopped {container_name}")
                 return []
             clients_table_path = self._clients_table_path()
             out, err, code = self.ssh.run_sudo_command(
@@ -2070,16 +2194,13 @@ x_exit_sync() {
                 if state and not state[1]:
                     # Container exists but is stopped: nothing to read, and
                     # the UI already shows the card as stopped.
+                    if writing:
+                        raise RuntimeError(f"Cannot update clientsTable in stopped {container_name}")
                     return []
                 # Running (or state unknown): probe the file itself.
-                _, _, fcode = self.ssh.run_sudo_command(
-                    f"docker exec -i {container_name} test -f {clients_table_path}")
-                if fcode == 0:
-                    raise RuntimeError(
-                        f"clientsTable exists in {container_name} but could "
-                        f"not be read (docker exec exit {code}): "
-                        f"{err or 'no output'}")
-                return []  # fresh instance: no clientsTable yet
+                if clients_table_missing(self.ssh, container_name, clients_table_path):
+                    return []  # positively confirmed fresh instance
+                raise RuntimeError(f"clientsTable in {container_name} could not be read")
 
         if not out.strip():
             if batch is not None:
@@ -2101,7 +2222,9 @@ x_exit_sync() {
                     except Exception:
                         pass
                     return self._get_clients_table(protocol_type)
-            return []
+            if batch is not None:
+                return []
+            raise RuntimeError(f"clientsTable in {container_name} is empty (expected JSON array)")
 
         try:
             data = json.loads(out)
@@ -2121,9 +2244,7 @@ x_exit_sync() {
                 for client_id, info in data.items():
                     result.append({
                         'clientId': client_id,
-                        'userData': {
-                            'clientName': info.get('clientName', 'Unknown'),
-                        }
+                        'userData': dict(info, clientName=info.get('clientName', 'Unknown'))
                     })
                 logger.info(
                     f"clientsTable {container_name}: {len(result)} records "
@@ -2148,29 +2269,25 @@ x_exit_sync() {
             raise RuntimeError(
                 f"clientsTable in {container_name} is not valid JSON "
                 f"(truncated read or corrupt file)")
+        raise RuntimeError(f"clientsTable in {container_name} has an unsupported JSON type")
 
     def _save_clients_table(self, protocol_type, clients_table):
         """Save the clients table to the server."""
         container_name = self._container_name(protocol_type)
         clients_table_path = self._clients_table_path()
-        content = json.dumps(clients_table, indent=2)
-
-        # Write to /tmp via SFTP, then docker cp into container
-        self.ssh.upload_file(content, "/tmp/_amnz_clients.json")
-        self.ssh.run_sudo_command(
-            f"docker cp /tmp/_amnz_clients.json {container_name}:{clients_table_path}"
-        )
-        self.ssh.run_command("rm -f /tmp/_amnz_clients.json")
-
-        # Drop prefetched batch snapshot so next read sees fresh data
-        if getattr(self.ssh, '_awg_batch', None) is not None:
-            self.ssh._awg_batch = None
+        try:
+            save_clients_table(self.ssh, container_name, clients_table_path, clients_table)
+        finally:
+            # A lost reply may follow a committed rename: reread either way.
+            if getattr(self.ssh, '_awg_batch', None) is not None:
+                self.ssh._awg_batch = None
 
         # Keep per-peer bandwidth limits in sync (best effort)
         try:
             self._apply_bw_limits(protocol_type, clients_table)
         except Exception as err:
             logger.warning(f"apply bw limits warning: {err}")
+            return str(err) or type(err).__name__
 
     def _bwlimits_path(self):
         """Flat file with per-peer speed limits, next to clientsTable."""
@@ -2229,20 +2346,27 @@ done < "$BW"
             lines.append(f"{ip4} {ip6} {mbps:g}")
         content = "\n".join(lines) + ("\n" if lines else "")
         self.ssh.upload_file(content, "/tmp/_amnz_bwlimits")
-        self.ssh.run_sudo_command(
+        _, err, code = self.ssh.run_sudo_command(
             f"docker cp /tmp/_amnz_bwlimits {container_name}:{self._bwlimits_path()}"
         )
         self.ssh.run_command("rm -f /tmp/_amnz_bwlimits")
+        if code != 0:
+            raise RuntimeError(f"Failed to save bandwidth limits: {err}")
         if self.check_container_running(protocol_type):
             body = self._tc_apply_body(self._bwlimits_path(), self._resolve_config_path(protocol_type))
             self.ssh.upload_file(body, "/tmp/_amnz_tc.sh")
-            self.ssh.run_sudo_command(
+            _, err, code = self.ssh.run_sudo_command(
                 f"docker cp /tmp/_amnz_tc.sh {container_name}:/tmp/_amnz_tc.sh && "
                 f"docker exec {container_name} bash /tmp/_amnz_tc.sh",
                 timeout=60
             )
             self.ssh.run_command("rm -f /tmp/_amnz_tc.sh")
+            if code != 0:
+                raise RuntimeError(f"Failed to apply bandwidth limits: {err}")
+        else:
+            raise RuntimeError('Bandwidth limits deferred: container is not running')
 
+    @_serialized_table_write
     def set_speed_limit(self, protocol_type, client_id, max_speed):
         """Set per-peer bandwidth limit in Mbit/s (0 = unlimited).
 
@@ -2263,7 +2387,9 @@ done < "$BW"
             ud.pop('maxSpeed', None)
         else:
             ud['maxSpeed'] = mbps
-        self._save_clients_table(protocol_type, clients_table)
+        warning = self._save_clients_table(protocol_type, clients_table)
+        if warning:
+            raise RuntimeError(f"Speed limit was not applied: {warning}")
         return {'status': 'success', 'max_speed': mbps}
 
     def _get_server_config(self, protocol_type):
@@ -2420,17 +2546,11 @@ done < "$BW"
             f"docker exec -i {container_name} cat {clients_table_path} 2>/dev/null"
         )
         if code != 0:
-            # cat fails both when docker exec is broken and when the file
-            # simply does not exist yet (fresh instance). Fail loudly only
-            # for the former; an absent table means no reservations.
-            _, terr, tcode = self.ssh.run_sudo_command(
-                f"docker exec -i {container_name} true")
-            if tcode != 0:
-                raise RuntimeError(
-                    f"Cannot read clients table from {container_name}: {terr.strip() or err.strip()}")
-            return set()
+            if clients_table_missing(self.ssh, container_name, clients_table_path):
+                return set()
+            raise RuntimeError(f"Cannot read IP reservations from {container_name}")
         if not out.strip():
-            return set()
+            raise RuntimeError(f"Clients table in {container_name} is empty (expected JSON)")
         try:
             data = json.loads(out)
         except json.JSONDecodeError:
@@ -2722,7 +2842,54 @@ done < "$BW"
                     counts[ip] = int(cnt_s)
             except ValueError:
                 continue
-        return counts
+
+        # Conntack keeps flows for hours/days after the peer disconnects, so
+        # a raw per-IP count attributes stale entries to offline peers and
+        # floods the UI with phantom warnings. Only peers with a fresh
+        # handshake can actually be opening connections right now.
+        live_ips = self._connected_peer_ips(protocol_type)
+        if live_ips is None:
+            return {}
+        return {ip: cnt for ip, cnt in counts.items() if ip in live_ips}
+
+    @staticmethod
+    def _parse_handshake_age(text):
+        """'1 minute, 51 seconds ago' -> 111. None when there was no handshake."""
+        if not text or 'ago' not in text:
+            return None
+        total = 0
+        for value, unit in re.findall(r'(\d+)\s+(second|minute|hour|day)', text):
+            total += int(value) * {'second': 1, 'minute': 60,
+                                   'hour': 3600, 'day': 86400}[unit]
+        return total
+
+    def _connected_peer_ips(self, protocol_type):
+        """IPs of peers whose latest handshake is recent (awg show, in-container).
+
+        Returns a set of IPv4 addresses, or None when liveness cannot be
+        determined (tool missing, empty output) so callers skip counting
+        instead of trusting stale data.
+        """
+        container = self._container_name(protocol_type)
+        out, err, code = self.ssh.run_sudo_command(
+            f'docker exec -i {container} sh -c "awg show 2>/dev/null || wg show 2>/dev/null"'
+        )
+        if code != 0 or not out.strip():
+            return None
+        live = set()
+        current_ip = None
+        for line in out.split('\n'):
+            line = line.strip()
+            if line.startswith('peer:'):
+                current_ip = None
+            elif line.startswith('allowed ips:'):
+                first = line.split(':', 1)[1].split(',')[0].strip()
+                current_ip = first.split('/')[0].strip()
+            elif line.startswith('latest handshake:') and current_ip:
+                age = self._parse_handshake_age(line.split(':', 1)[1].strip())
+                if age is not None and age <= CONN_LIVE_HANDSHAKE_SECONDS:
+                    live.add(current_ip)
+        return live
 
     def _conn_counts_path(self):
         """Path inside container with the latest per-IP connection counts."""
@@ -2875,6 +3042,7 @@ done < "$BW"
 
         return result
 
+    @_serialized_table_write
     def add_client(self, protocol_type, client_name, server_host, port, public_port=None, data_limit_gb=None, expiry_date=None, **kwargs):
         """
         Add a new client/peer to the AWG config.
@@ -3113,6 +3281,7 @@ PersistentKeepalive = 25
 """
         return config
 
+    @_serialized_table_write
     def toggle_client(self, protocol_type, client_id, enable):
         """Enable or disable a client by adding/removing their [Peer] from server config."""
         container_name = self._container_name(protocol_type)
@@ -3256,6 +3425,7 @@ PersistentKeepalive = 25
         if table_changed:
             self._save_clients_table(protocol_type, clients_table)
 
+    @_serialized_table_write
     def remove_client(self, protocol_type, client_id):
         """Remove a client from AWG config (mirrors revokeWireGuard)."""
         container_name = self._container_name(protocol_type)
@@ -3498,6 +3668,7 @@ PersistentKeepalive = 25
             return str(user_data['mtu'])
         return self._read_config_key(protocol_type, 'MTU') or AWG_DEFAULTS['mtu']
 
+    @_serialized_table_write
     def save_client_config(self, protocol_type, client_id, config_text):
         """Persist a manually edited client config. Stored verbatim in
         clientsTable (userData.customConfig) and returned by get_client_config
@@ -3526,6 +3697,7 @@ PersistentKeepalive = 25
         self._save_clients_table(protocol_type, clients_table)
         return {'status': 'success'}
 
+    @_serialized_table_write
     def rename_client(self, protocol_type, client_id, new_name):
         """Rename a client. The name lives only in the clientsTable
         (userData.clientName); keys, IPs and the WireGuard config itself
