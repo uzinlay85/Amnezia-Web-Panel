@@ -15,6 +15,7 @@
 | **05** | **AmneziaWG & Outline Disconnect / UFW Fix** | အစပိုင်းတွင် သုံး၍ရပြီး နာရီပိုင်းကြာလျှင် Webpage ဖွင့်မရတော့သည့် UFW Forwarding Drop ပြဿနာနှင့် အပြီးတိုင် ဖြေရှင်းနည်း | [👉 05_VPN_DISCONNECT_UFW_TROUBLESHOOTING.md](05_VPN_DISCONNECT_UFW_TROUBLESHOOTING.md) |
 | **06** | **VPS Monitoring, Logging & Security Guide** | Log များ စောင့်ကြည့်ခြင်း၊ System Performance (CPU/RAM/Disk/Network) စစ်ဆေးခြင်းနှင့် Hacker Attack / Port Scan ကာကွယ်နည်းများ | [👉 06_VPS_MONITORING_AND_LOGGING_GUIDE.md](06_VPS_MONITORING_AND_LOGGING_GUIDE.md) |
 | **07** | **Cloudflare CDN + 3X-UI Setup Guide** | ATOM/MPT ISP DPI နှင့် VPS IP Block / DDoS Null-Route များကို Cloudflare Free CDN (VLESS-WebSocket) ဖြင့် ကျော်လွှားတပ်ဆင်နည်း | [👉 07_CLOUDFLARE_3XUI_SETUP_GUIDE.md](07_CLOUDFLARE_3XUI_SETUP_GUIDE.md) |
+| **08** | **v1.7.7 SSH Known Hosts & MTU/MSS Fix** | v1.7.7 ၏ SSH Host Key Verification (`RejectPolicy`), `backing off 300s`, Cloudflare-Protected IP MTU/MSS Clamping နှင့် Docker Build Timeout ဖြေရှင်းနည်းများ | [👉 08_V177_SSH_KNOWN_HOSTS_AND_MTU_TROUBLESHOOTING.md](08_V177_SSH_KNOWN_HOSTS_AND_MTU_TROUBLESHOOTING.md) |
 
 ---
 
